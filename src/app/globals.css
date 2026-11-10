@@ -2461,55 +2461,120 @@ textarea.input {
 }
 
 /* ------------------------------------------------------------ auth page --- */
+/* Golden-section composition.
+   The two columns split 1 : 1.618 — the paper side carries the larger share,
+   the iris panel the remaining 38.2% — and every distance, radius and type step
+   used below comes from the Fibonacci run (8 · 13 · 21 · 34 · 55) instead of an
+   arbitrary number, so the rhythm stays proportional at any size. */
 .auth {
-  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
-  gap: var(--gap);
-  padding: var(--gutter);
+  --fib-8: 8px;
+  --fib-13: 13px;
+  --fib-21: 21px;
+  --fib-34: 34px;
+  --fib-55: 55px;
+  grid-template-columns: minmax(0, 1.618fr) minmax(0, 1fr);
+  /* One row, locked to the viewport: both columns are given exactly the height
+     that is left, so a tall aside can never stretch the page. */
+  grid-template-rows: minmax(0, 1fr);
+  gap: var(--fib-21);
+  padding: var(--fib-21);
   display: grid;
-  min-height: 100dvh;
+  height: 100vh;
+  height: 100dvh;
+  /* Login and register are single-screen pages — the document itself never
+     scrolls. Short screens breathe by compacting (see below); if a form still
+     cannot fit, only its own column scrolls, without a visible scrollbar. */
+  overflow: hidden;
+  isolation: isolate;
+  position: relative;
+}
+/* Aurora backdrop: a full-viewport layer behind both columns. It is `fixed` and
+   `pointer-events: none`, so it never becomes a grid item and never steals
+   clicks — the component listens on window for the pointer instead. */
+.auth__backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 0;
+  pointer-events: none;
+}
+.auth__backdrop__layer {
+  position: absolute;
+  inset: 0;
+}
+/* The bottom layer sits above the top one, adding a second, lighter pass. */
+.auth__backdrop__layer--low {
+  mix-blend-mode: multiply;
+}
+.aurora {
+  width: 100%;
+  height: 100%;
+  position: relative;
+  overflow: hidden;
+}
+.aurora__canvas {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  display: block;
 }
 @media (width <= 940px) {
   .auth {
     grid-template-columns: 1fr;
-    padding: 16px;
-  }
-  .auth__aside {
-    display: none;
+    padding: var(--fib-13);
   }
 }
 .auth__panel {
-  place-items: center;
-  display: grid;
-  padding: 24px 16px;
+  /* Flex + `safe center` (instead of a centred grid) so a form taller than the
+     column starts at the top and stays reachable instead of being clipped at
+     both ends. This is the only place that may scroll, and its scrollbar is
+     hidden — the page around it stays still. */
+  align-items: safe center;
+  justify-content: center;
+  display: flex;
+  min-height: 0;
+  padding: var(--fib-21);
+  position: relative;
+  z-index: 1;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  scrollbar-width: none;
+}
+.auth__panel::-webkit-scrollbar {
+  display: none;
 }
 .auth__card {
-  width: min(430px, 100%);
+  /* 61.8% of the widest paper column (762px) — the form is the golden take of
+     the space it sits in, not a fixed 430px island. */
+  width: min(471px, 100%);
+  flex: 0 0 auto;
 }
 .auth__brand {
   align-items: center;
-  gap: 12px;
-  margin-bottom: 26px;
+  gap: var(--fib-13);
+  margin-bottom: var(--fib-34);
   display: inline-flex;
 }
 .auth__brand .brand__logo {
-  height: 34px;
+  height: var(--fib-34);
 }
 .auth__title {
   letter-spacing: -0.035em;
-  font-size: clamp(26px, 3vw, 34px);
+  font-size: clamp(26px, 3.4vw, var(--fib-34));
   font-weight: 600;
-  line-height: 1.15;
+  line-height: 1.1;
 }
 .auth__sub {
   color: var(--muted);
-  margin: 8px 0 26px;
-  font-size: var(--fs-lg);
+  margin: var(--fib-8) 0 var(--fib-34);
+  font-size: clamp(17px, 1.6vw, var(--fib-21));
+  line-height: 1.5;
 }
 .auth__foot {
   color: var(--muted);
   text-align: center;
-  margin-top: 20px;
-  font-size: var(--fs-md);
+  margin-top: var(--fib-21);
+  font-size: var(--fib-13);
 }
 .auth__foot a {
   color: var(--primary-ink);
@@ -2518,40 +2583,137 @@ textarea.input {
 .auth__aside {
   border-radius: var(--r-card);
   color: var(--on-ink);
-  background: radial-gradient(130% 100% at 18% 0%, #51c59033, transparent 58%),
-    radial-gradient(130% 100% at 82% 100%, #302e5933, transparent 62%),
+  /* The two accent pools sit on the golden points of the panel. */
+  background: radial-gradient(130% 100% at 38.2% 0%, #51c59033, transparent 58%),
+    radial-gradient(130% 100% at 61.8% 100%, #302e5933, transparent 62%),
     var(--pill-grad);
   isolation: isolate;
-  padding: 40px;
+  padding: var(--fib-34);
   flex-direction: column;
   justify-content: flex-end;
   display: flex;
   position: relative;
+  z-index: 1;
   overflow: hidden;
+  min-height: 0;
   box-shadow: var(--shadow-pop);
+}
+/* Metallic logo above the quote. The canvas spans the full width of the panel
+   (the negative side margins cancel the panel padding) and grows into whatever
+   height is left above the copy, so the mark is centred in its own bay instead
+   of being pinned to a corner. The shader always fits the artwork inside a
+   centred square of `min(width, height)`, so the mark is never cropped at any
+   panel size — it just scales with it. `max-height` keeps a very tall window
+   from paying for a giant, mostly empty canvas. */
+.auth__paint {
+  flex: 1 1 auto;
+  max-height: 72%;
+  min-height: 0;
+  margin: 0 calc(var(--fib-34) * -1) var(--fib-13);
+  position: relative;
+}
+/* Metallic-paint canvas (WebGL2). Sizing is owned by the wrapper. */
+.metallic-paint {
+  width: 100%;
+  height: 100%;
+  position: relative;
+}
+.metallic-paint__canvas {
+  width: 100%;
+  height: 100%;
+  display: block;
+}
+/* Stacked layout (phones, small tablets): the purple aside is decoration, and
+   on one column it would sit below the form and force the page to scroll — so
+   it steps aside. The form keeps the whole screen. */
+@media (width <= 940px) {
+  .auth__aside,
+  .auth__paint {
+    display: none;
+  }
+  /* Stacked layout: keep the phone gutters Fibonacci-narrow. Declared after the
+     base rule on purpose, so it wins on source order. */
+  .auth__panel {
+    padding: var(--fib-13) var(--fib-8);
+  }
+}
+/* Short windows: trim the vertical rhythm a step at a time so the form still
+   lands inside 100dvh without a scrollbar. Three tiers rather than one, so a
+   900px-tall window does not get the same cramped density as a 650px one. */
+@media (max-height: 880px) {
+  .auth__panel {
+    padding-block: var(--fib-13);
+  }
+  .auth__brand {
+    margin-bottom: var(--fib-21);
+  }
+  .auth__sub {
+    margin: var(--fib-8) 0 var(--fib-21);
+    font-size: 17px;
+  }
+  .auth__foot {
+    margin-top: var(--fib-13);
+  }
+  .auth .stack {
+    gap: var(--fib-13);
+  }
+  .auth .field {
+    gap: 4px;
+  }
+}
+@media (max-height: 760px) {
+  /* Under ~760px the tagline is the first thing to go: the form matters more. */
+  .auth__sub {
+    display: none;
+  }
+  .auth .stack {
+    gap: 10px;
+  }
+  .auth .field input {
+    height: 40px;
+  }
+}
+@media (max-height: 720px) {
+  /* Last tier: very short windows (small laptops, landscape phones) — tighten
+     the rhythm once more rather than let the form slide. */
+  .auth__panel {
+    padding-block: var(--fib-8);
+  }
+  .auth__brand {
+    margin-bottom: var(--fib-13);
+  }
+  .auth__foot {
+    margin-top: var(--fib-8);
+  }
+  .auth .stack {
+    gap: 8px;
+  }
+  .auth .field input {
+    height: 38px;
+  }
 }
 .auth__quote {
   letter-spacing: -0.03em;
   max-width: 16em;
-  font-size: var(--fs-4xl);
+  font-size: clamp(21px, 2vw, var(--fs-4xl));
   font-weight: 600;
   line-height: 1.2;
 }
 .auth__by {
   color: #ffffffa6;
-  margin-top: 12px;
-  font-size: var(--fs-md);
+  margin-top: var(--fib-13);
+  font-size: var(--fib-13);
 }
 .auth__points {
   flex-direction: column;
-  gap: 10px;
-  margin-top: 28px;
+  gap: var(--fib-13);
+  margin-top: var(--fib-21);
   display: flex;
 }
 .auth__points li {
   color: #ffffffd9;
   align-items: center;
-  gap: 10px;
+  gap: var(--fib-13);
   font-size: var(--fs-md);
   display: flex;
 }

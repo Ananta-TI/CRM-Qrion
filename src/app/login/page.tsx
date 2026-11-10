@@ -1,7 +1,9 @@
 import Link from "next/link";
 import { redirect } from "next/navigation";
 
+import { AuthBackdrop } from "@/components/auth-backdrop";
 import { IconCheck } from "@/components/icons";
+import { MetallicLogo } from "@/components/metallic-logo";
 import { QrionLogo } from "@/components/qrion-logo";
 import { getSession, homeFor } from "@/lib/auth/session";
 import { LoginForm } from "./login-form";
@@ -14,6 +16,8 @@ export default async function LoginPage() {
 
   return (
     <div className="auth">
+      <AuthBackdrop />
+
       <div className="auth__panel">
         <div className="auth__card">
           <Link className="auth__brand" href="/login">
@@ -41,6 +45,10 @@ export default async function LoginPage() {
       </div>
 
       <aside className="auth__aside" aria-hidden="true">
+        <div className="auth__paint">
+          <MetallicLogo />
+        </div>
+
         <p className="auth__quote">
           Setiap keluhan punya jalannya sendiri. Qrion memastikan tidak ada yang
           hilang di tengah.
