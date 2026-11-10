@@ -6,18 +6,27 @@ import { createClient } from "@/lib/supabase/server";
 /**
  * One row in the top-right bell.
  *
- * Notifications are derived from `ticket_events` instead of a separate table:
- * every meaningful transition already writes an event, so there is a single
- * source of truth and no risk of the two drifting apart.
+ * Ticket activity is derived from `ticket_events` — every meaningful
+ * transition already writes an event, so there is a single source of truth.
+ * Account changes (create user, role, activation, password reset) cannot carry
+ * a ticket id, so they live in `notifications` and are merged into the same
+ * feed here.
  */
 export type NotificationItem = {
   id: string;
-  ticketId: string;
-  ticketCode: string;
-  subject: string;
+  kind: "ticket" | "account";
+  ticketId: string | null;
+  ticketCode: string | null;
+  subject: string | null;
   message: string;
   href: string;
   createdAt: string;
+};
+
+export type NotificationFeed = {
+  items: NotificationItem[];
+  /** Last time the caller opened the bell, stored on their profile. */
+  seenAt: string | null;
 };
 
 type EventRow = {
@@ -35,7 +44,15 @@ type TicketRow = {
   id: string;
   ticket_code: string;
   subject: string;
-  sla_policy_minutes: number | null;
+};
+
+type AccountRow = {
+  id: string;
+  kind: string;
+  title: string;
+  body: string | null;
+  href: string | null;
+  created_at: string;
 };
 
 /** Turn a raw event into the sentence the bell shows. */
@@ -43,20 +60,6 @@ function describe(event: EventRow, ticket: TicketRow): string {
   const code = ticket.ticket_code;
 
   switch (event.event_type) {
-    case "escalated": {
-      const targetHours = ticket.sla_policy_minutes
-        ? Math.round(ticket.sla_policy_minutes / 60)
-        : null;
-
-      return [
-        `Tiket dieskalasi dari ${event.from_value ?? "L1"} ke ${event.to_value ?? "L2"}.`,
-        `Alasan: ${event.note ?? "—"}.`,
-        targetHours ? `Target SLA baru: ${targetHours} jam.` : null,
-      ]
-        .filter(Boolean)
-        .join(" ");
-    }
-
     case "created":
       return `Tiket ${code} dibuat.${event.note ? ` ${event.note}.` : ""}`;
 
@@ -66,7 +69,7 @@ function describe(event: EventRow, ticket: TicketRow): string {
     }
 
     case "assigned":
-      return `Tiket ${code} ditugaskan ke ${event.to_value ?? "agen"}.${
+      return `Tiket ${code} ditugaskan ke ${event.to_value ?? "programmer"}.${
         event.note ? ` ${event.note}.` : ""
       }`;
 
@@ -75,12 +78,15 @@ function describe(event: EventRow, ticket: TicketRow): string {
         event.note ? ` “${event.note}”` : ""
       }`;
 
-    case "knowledge_published":
-      return `Resolusi tiket ${code} diarsipkan ke Knowledge Base.`;
+    case "triage_corrected":
+      return `Klasifikasi tiket ${code} dikoreksi dari ${event.from_value ?? "—"} ke ${event.to_value ?? "—"}.`;
+
+    case "auto_closed":
+      return `Tiket ${code} ditutup otomatis karena tidak ada respons pegawai.`;
 
     case "message":
       return `Pesan baru dari ${
-        event.to_value === "agent" ? "agen" : "pelanggan"
+        event.to_value === "agent" ? "programmer" : "pegawai"
       } pada tiket ${code}.`;
 
     default:
@@ -89,48 +95,66 @@ function describe(event: EventRow, ticket: TicketRow): string {
 }
 
 /**
- * The newest events the caller is allowed to see. RLS on `tickets` /
- * `ticket_events` does the access check for us.
+ * The newest items the caller may see. RLS on `tickets` / `ticket_events`
+ * does the ticket access check for us; RLS on `notifications` does the same
+ * for account events.
  *
  * A message event authored by the viewer is skipped — nobody needs a bell for
- * their own reply. Everything else (including your own escalations) is kept so
- * the timeline stays explainable.
+ * their own reply. Everything else stays so the timeline remains explainable.
  */
-export async function getNotifications(limit = 20): Promise<NotificationItem[]> {
+export async function getNotifications(limit = 20): Promise<NotificationFeed> {
   const session = await requireSession();
   const supabase = await createClient();
 
-  const { data: events, error } = await supabase
-    .from("ticket_events")
-    .select(
-      "id, ticket_id, actor_id, event_type, from_value, to_value, note, created_at",
-    )
-    .order("created_at", { ascending: false })
-    .limit(limit);
+  const [{ data: profile }, { data: events, error }, { data: accounts }] =
+    await Promise.all([
+      supabase
+        .from("profiles")
+        .select("notifications_seen_at")
+        .eq("id", session.userId)
+        .single(),
+      supabase
+        .from("ticket_events")
+        .select(
+          "id, ticket_id, actor_id, event_type, from_value, to_value, note, created_at",
+        )
+        .order("created_at", { ascending: false })
+        .limit(limit),
+      // Missing before migration 0011: the query simply fails and ticket
+      // activity still renders.
+      supabase
+        .from("notifications")
+        .select("id, kind, title, body, href, created_at")
+        .eq("recipient_id", session.userId)
+        .order("created_at", { ascending: false })
+        .limit(limit),
+    ]);
 
-  if (error || !events?.length) return [];
+  const seenAt = profile?.notifications_seen_at ?? null;
+  const items: NotificationItem[] = [];
 
-  const ids = Array.from(new Set(events.map((e) => e.ticket_id)));
+  if (!error && events?.length) {
+    const ids = Array.from(new Set(events.map((e) => e.ticket_id)));
 
-  const { data: tickets } = await supabase
-    .from("tickets")
-    .select("id, ticket_code, subject, sla_policy_minutes")
-    .in("id", ids);
+    const { data: tickets } = await supabase
+      .from("tickets")
+      .select("id, ticket_code, subject")
+      .in("id", ids);
 
-  const ticketById = new Map((tickets ?? []).map((t) => [t.id, t]));
-  const staff = isStaff(session.profile.role);
+    const ticketById = new Map((tickets ?? []).map((t) => [t.id, t]));
+    const staff = isStaff(session.profile.role);
 
-  return events.flatMap((event) => {
-    if (event.event_type === "message" && event.actor_id === session.userId) {
-      return [];
-    }
+    for (const event of events) {
+      if (event.event_type === "message" && event.actor_id === session.userId) {
+        continue;
+      }
 
-    const ticket = ticketById.get(event.ticket_id);
-    if (!ticket) return [];
+      const ticket = ticketById.get(event.ticket_id);
+      if (!ticket) continue;
 
-    return [
-      {
+      items.push({
         id: event.id,
+        kind: "ticket",
         ticketId: event.ticket_id,
         ticketCode: ticket.ticket_code,
         subject: ticket.subject,
@@ -139,7 +163,51 @@ export async function getNotifications(limit = 20): Promise<NotificationItem[]> 
           ? `/agent/tickets/${event.ticket_id}`
           : `/dashboard/tickets/${event.ticket_id}`,
         createdAt: event.created_at,
-      },
-    ];
-  });
+      });
+    }
+  }
+
+  for (const row of (accounts ?? []) as AccountRow[]) {
+    items.push({
+      id: row.id,
+      kind: "account",
+      ticketId: null,
+      ticketCode: null,
+      subject: row.body,
+      message: row.title,
+      href: row.href || "/settings",
+      createdAt: row.created_at,
+    });
+  }
+
+  items.sort(
+    (a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime(),
+  );
+
+  return { items: items.slice(0, limit), seenAt };
+}
+
+/**
+ * Persist the bell's read marker on the profile, so reading on a laptop also
+ * clears the badge on a phone. The profile RLS policy already allows a user to
+ * update their own row. Account rows also get their `read_at` stamped.
+ */
+export async function markNotificationsSeen(): Promise<{ ok: boolean }> {
+  const session = await requireSession();
+  const supabase = await createClient();
+  const now = new Date().toISOString();
+
+  const [{ error }] = await Promise.all([
+    supabase
+      .from("profiles")
+      .update({ notifications_seen_at: now })
+      .eq("id", session.userId),
+    supabase
+      .from("notifications")
+      .update({ read_at: now })
+      .eq("recipient_id", session.userId)
+      .is("read_at", null),
+  ]);
+
+  return { ok: !error };
 }

@@ -1,10 +1,10 @@
 "use client";
 
-import { useRouter } from "next/navigation";
 import { useEffect, useRef, useState } from "react";
 
 import { ChatThread } from "@/components/chat-thread";
 import { IconChat, IconClose } from "@/components/icons";
+import type { SignedAttachment } from "@/lib/attachments";
 import { markStoredTimestamp, useStoredTimestamp } from "@/lib/use-stored-timestamp";
 import type { Message } from "@/lib/types/database";
 
@@ -24,15 +24,16 @@ export function ConversationDrawer({
   viewer,
   canPost,
   closedNotice,
+  attachmentsByMessage,
 }: {
   ticketId: string;
   messages: ThreadMessage[];
   viewer: { id: string; role: string };
   canPost: boolean;
   closedNotice?: string;
+  attachmentsByMessage?: Record<string, SignedAttachment[]>;
 }) {
   const ref = useRef<HTMLDialogElement>(null);
-  const router = useRouter();
   const [open, setOpen] = useState(false);
   const seenKey = `qrion_thread_seen_${ticketId}`;
   const seenEvent = `qrion-thread-seen-${ticketId}`;
@@ -56,10 +57,6 @@ export function ConversationDrawer({
   function openDrawer() {
     setOpen(true);
     markStoredTimestamp(seenKey, seenEvent);
-
-    // Pull the freshest messages while the drawer is opening. The page is a
-    // server component, so this re-renders the thread in place.
-    router.refresh();
   }
 
   return (
@@ -88,6 +85,9 @@ export function ConversationDrawer({
             <h2 className="drawer__title" id="convo-title">
               Percakapan
             </h2>
+            <span className="chip">
+              {messages.length} pesan
+            </span>
             <button
               className="icon-btn icon-btn--round"
               type="button"
@@ -105,6 +105,7 @@ export function ConversationDrawer({
               viewer={viewer}
               canPost={canPost}
               closedNotice={closedNotice}
+              attachmentsByMessage={attachmentsByMessage}
             />
           </div>
         </div>

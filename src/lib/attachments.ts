@@ -17,6 +17,27 @@ export type SignedAttachment = Attachment & { url: string | null };
  * fails (deleted object, revoked access) comes back with `url: null` rather
  * than blowing up the page.
  */
+export async function signMessageAttachments(
+  messages: { id: string; attachments: Attachment[] | null | undefined }[],
+  expiresIn = 60 * 60,
+): Promise<Record<string, SignedAttachment[]>> {
+  const all = messages.flatMap((m) => m.attachments ?? []);
+  if (all.length === 0) return {};
+
+  const signed = await signAttachments(all, expiresIn);
+  const byPath = new Map(signed.map((a) => [a.path, a] as const));
+
+  const result: Record<string, SignedAttachment[]> = {};
+  for (const message of messages) {
+    const items = (message.attachments ?? []).map(
+      (a) => byPath.get(a.path) ?? { ...a, url: null },
+    );
+    if (items.length > 0) result[message.id] = items;
+  }
+
+  return result;
+}
+
 export async function signAttachments(
   items: Attachment[] | null | undefined,
   expiresIn = 60 * 60,

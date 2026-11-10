@@ -37,7 +37,7 @@ export function Pager({
   return (
     <nav className="pager" aria-label="Halaman">
       {page > 1 ? (
-        <Link className="pager__btn" href={href(prev)} rel="prev">
+        <Link className="pager__btn" href={href(prev)} rel="prev" prefetch={false}>
           <IconLeft /> Sebelumnya
         </Link>
       ) : (
@@ -51,7 +51,7 @@ export function Pager({
       </span>
 
       {page < pageCount ? (
-        <Link className="pager__btn" href={href(next)} rel="next">
+        <Link className="pager__btn" href={href(next)} rel="next" prefetch={false}>
           Berikutnya <IconRight />
         </Link>
       ) : (

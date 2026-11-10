@@ -16,9 +16,6 @@ export default function NotFound() {
             <Link className="btn btn--primary" href="/">
               Kembali ke dashboard
             </Link>
-            <Link className="btn btn--ghost" href="/help">
-              Pusat bantuan
-            </Link>
           </div>
         </div>
       </div>

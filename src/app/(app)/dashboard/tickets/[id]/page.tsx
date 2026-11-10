@@ -8,16 +8,20 @@ import { ReopenButton } from "@/components/reopen-button";
 import { ValidationPanel } from "@/components/validation-panel";
 import {
   Avatar,
-  LevelPill,
   PageHead,
   Rating,
   SlaMeter,
   StatusPill,
   UrgencyPill,
 } from "@/components/ui";
-import { signAttachments } from "@/lib/attachments";
+import { signAttachments, signMessageAttachments } from "@/lib/attachments";
 import { requireCustomer } from "@/lib/auth/session";
-import { formatCurrency, formatDate, formatDateTime } from "@/lib/domain/tickets";
+import {
+  canCustomerReopen,
+  formatCurrency,
+  formatDate,
+  formatDateTime,
+} from "@/lib/domain/tickets";
 import { createClient } from "@/lib/supabase/server";
 
 export const metadata = { title: "Detail Tiket" };
@@ -32,30 +36,39 @@ export default async function CustomerTicketDetail({
 
   const supabase = await createClient();
 
-  const { data: ticket } = await supabase
+  // Start the independent reads together. Messages/events are keyed by the
+  // ticket id, so they do not need to wait for the ticket row.
+  const ticketPromise = supabase
     .from("tickets")
     .select("*")
     .eq("id", id)
+    // Defence in depth alongside RLS: never load a ticket owned by someone
+    // else into the page tree.
+    .eq("customer_id", session.userId)
     .single();
+  const messagesPromise = supabase
+    .from("messages")
+    .select("*")
+    .eq("ticket_id", id)
+    .order("created_at", { ascending: true });
+  const eventsPromise = supabase
+    .from("ticket_events")
+    .select("*")
+    .eq("ticket_id", id)
+    .order("created_at", { ascending: false })
+    .limit(12);
+
+  const { data: ticket } = await ticketPromise;
 
   // RLS already hides other people's tickets; this is the friendly 404.
   if (!ticket || ticket.customer_id !== session.userId) notFound();
 
   const [{ data: rawMessages }, { data: agent }, { data: events }] = await Promise.all([
-    supabase
-      .from("messages")
-      .select("*")
-      .eq("ticket_id", id)
-      .order("created_at", { ascending: true }),
+    messagesPromise,
     ticket.assignee_id
       ? supabase.from("profiles").select("*").eq("id", ticket.assignee_id).single()
       : Promise.resolve({ data: null }),
-    supabase
-      .from("ticket_events")
-      .select("*")
-      .eq("ticket_id", id)
-      .order("created_at", { ascending: false })
-      .limit(12),
+    eventsPromise,
   ]);
 
   const visible = (rawMessages ?? []).filter((m) => m.kind !== "note");
@@ -65,22 +78,24 @@ export default async function CustomerTicketDetail({
       m.author_role === "customer"
         ? session.profile.full_name
         : m.author_id === ticket.assignee_id
-          ? agent?.full_name ?? "Agen"
-          : "Agen",
+          ? agent?.full_name ?? "Programmer"
+          : "Programmer",
   }));
 
-  // Chat is locked until a real agent reply exists. System notices and
-  // internal notes do not count.
-  const agentHasReplied = visible.some(
-    (m) => m.author_role === "agent" && m.kind !== "note",
-  );
+  // The chat is open from the moment the ticket exists. Only a closed ticket
+  // locks the composer; reopening restores it.
   const isClosed = ticket.status === "Closed";
-  const canPost = !isClosed && agentHasReplied;
+  const canPost = !isClosed;
   const closedNotice = isClosed
     ? "Tiket sudah ditutup. Buka kembali untuk membalas."
-    : "Percakapan akan aktif setelah agen mengirim pesan pertama.";
+    : undefined;
 
-  const ticketAttachments = await signAttachments(ticket.attachments);
+  const [ticketAttachments, messageAttachments] = await Promise.all([
+    signAttachments(ticket.attachments),
+    signMessageAttachments(visible),
+  ]);
+
+  const reopenable = canCustomerReopen(ticket.closed_at);
 
   const justCreated = query.created === "1";
   const justClosed = query.closed === "1";
@@ -104,6 +119,7 @@ export default async function CustomerTicketDetail({
           viewer={{ id: session.userId, role: "user" }}
           canPost={canPost}
           closedNotice={closedNotice}
+          attachmentsByMessage={messageAttachments}
         />
       </PageHead>
 
@@ -142,9 +158,7 @@ export default async function CustomerTicketDetail({
             <p className="copy mt-2">
               {canPost
                 ? "Diskusi tiket ini dibuka di panel samping. Buka lewat tombol Percakapan di atas untuk membaca dan membalas."
-                : isClosed
-                  ? "Tiket sudah ditutup. Buka kembali tiket untuk melanjutkan percakapan."
-                  : "Percakapan akan aktif setelah agen mengirim pesan pertama. Anda tetap dapat memantau status tiket di halaman ini."}
+                : "Tiket sudah ditutup. Buka kembali tiket untuk melanjutkan percakapan."}
             </p>
           </section>
         </div>
@@ -161,6 +175,9 @@ export default async function CustomerTicketDetail({
               deadline={ticket.sla_deadline}
               status={ticket.status}
               breached={ticket.sla_breached}
+              paused={Boolean(ticket.sla_paused_at)}
+              pausedAt={ticket.sla_paused_at}
+              pausedMinutes={ticket.sla_paused_minutes}
             />
 
             <hr className="hair" />
@@ -169,12 +186,6 @@ export default async function CustomerTicketDetail({
               <div>
                 <dt>Kategori</dt>
                 <dd>{ticket.category}</dd>
-              </div>
-              <div>
-                <dt>Level</dt>
-                <dd>
-                  <LevelPill level={ticket.escalation_level} />
-                </dd>
               </div>
               <div>
                 <dt>Dibuat</dt>
@@ -207,14 +218,14 @@ export default async function CustomerTicketDetail({
                     ticketCode={ticket.ticket_code}
                     alreadyScored={ticket.csat_score}
                   />
-                  <ReopenButton ticketId={ticket.id} />
+                  <ReopenButton ticketId={ticket.id} reopenable={reopenable} />
                 </div>
               </>
             )}
           </section>
 
           <section className="card">
-            <h2 className="card__title">Agen penanggung jawab</h2>
+            <h2 className="card__title">Programmer penanggung jawab</h2>
             {agent ? (
               <div className="row row--center mt-2">
                 <Avatar name={agent.full_name} tint={agent.avatar_tint} size="lg" />
@@ -225,8 +236,8 @@ export default async function CustomerTicketDetail({
               </div>
             ) : (
               <p className="copy mt-2">
-                Belum ada agen yang mengambil tiket ini. Tim frontline akan
-                segera menanganinya.
+                Tiket ini terbuka untuk semua programmer dan akan segera
+                ditangani.
               </p>
             )}
           </section>
@@ -267,16 +278,20 @@ export default async function CustomerTicketDetail({
                           {e.event_type === "created"
                             ? "Tiket dibuat"
                             : e.event_type === "escalated"
-                              ? `Eskalasi ${e.from_value} → ${e.to_value}`
+                              ? `Penanganan dialihkan ${e.from_value} → ${e.to_value}`
                               : e.event_type === "assigned"
                                 ? `Ditugaskan ke ${e.to_value}`
                                 : e.event_type === "csat"
                                   ? `Survei kepuasan: ${e.to_value}/5`
                                   : e.event_type === "knowledge_published"
-                                    ? "Diarsipkan ke knowledge base"
-                                    : e.event_type === "message"
-                                      ? `Pesan baru dari ${e.to_value === "agent" ? "agen" : "pelanggan"}`
-                                      : `Status: ${e.from_value} → ${e.to_value}`}
+                                    ? "Resolusi dicatat"
+                                    : e.event_type === "auto_closed"
+                                      ? "Ditutup otomatis oleh sistem"
+                                      : e.event_type === "triage_corrected"
+                                        ? `Klasifikasi dikoreksi: ${e.from_value} → ${e.to_value}`
+                                        : e.event_type === "message"
+                                          ? `Pesan baru dari ${e.to_value === "agent" ? "programmer" : "pegawai"}`
+                                          : `Status: ${e.from_value} → ${e.to_value}`}
                         </p>
                         <p className="tl-item__time">{formatDateTime(e.created_at)}</p>
                         {e.note && <p className="tl-item__note">{e.note}</p>}

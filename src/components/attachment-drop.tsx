@@ -34,12 +34,15 @@ export function AttachmentDrop({
   files,
   onChange,
   disabled,
+  compact = false,
 }: {
   files: PendingFile[];
   onChange: (next: PendingFile[]) => void;
   disabled?: boolean;
+  compact?: boolean;
 }) {
   const inputRef = useRef<HTMLInputElement>(null);
+  const rootRef = useRef<HTMLDivElement>(null);
   const [dragging, setDragging] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
@@ -90,11 +93,17 @@ export function AttachmentDrop({
     [onChange],
   );
 
-  // Paste anywhere on the page while this control is mounted.
+  // Paste anywhere on the page while this control is mounted — but only while
+  // it is actually visible. The conversation drawer keeps the thread mounted
+  // when closed, so an unguarded listener silently attached screenshots to a
+  // composer the user could not see.
   useEffect(() => {
     if (disabled) return;
 
     function onPaste(e: ClipboardEvent) {
+      const root = rootRef.current;
+      if (!root || root.getClientRects().length === 0) return;
+
       const items = e.clipboardData?.items;
       if (!items) return;
 
@@ -122,7 +131,7 @@ export function AttachmentDrop({
   }
 
   return (
-    <div className="attach">
+    <div className={`attach${compact ? " attach--compact" : ""}`} ref={rootRef}>
       <div
         className={`attach__drop${dragging ? " attach__drop--over" : ""}${
           disabled ? " attach__drop--off" : ""

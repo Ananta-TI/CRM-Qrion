@@ -9,6 +9,7 @@ import {
 } from "@/components/ui";
 import { IconPlus, IconTicket } from "@/components/icons";
 import { requireCustomer } from "@/lib/auth/session";
+import { greetingName } from "@/lib/domain/people";
 import { relativeTime } from "@/lib/domain/tickets";
 import { createClient } from "@/lib/supabase/server";
 
@@ -38,7 +39,7 @@ export default async function CustomerDashboard() {
   return (
     <>
       <PageHead
-        title={`Halo, ${session.profile.full_name.split(" ")[0]}`}
+        title={`Halo, ${greetingName(session.profile.full_name)}`}
         sub="Semua keluhan Anda, beserta target penyelesaiannya."
       >
         <Link className="btn btn--primary" href="/dashboard/new">
@@ -56,13 +57,14 @@ export default async function CustomerDashboard() {
               {needsValidation.length} tiket menunggu validasi Anda
             </p>
             <p className="banner__sub">
-              Agen sudah mengirim solusi. Konfirmasi apakah masalah Anda sudah
+              Programmer sudah mengirim solusi. Konfirmasi apakah masalah Anda sudah
               selesai.
             </p>
           </div>
           <Link
             className="btn btn--warn btn--sm"
             href={`/dashboard/tickets/${needsValidation[0].id}`}
+            prefetch={false}
           >
             Tinjau sekarang
           </Link>
@@ -71,8 +73,8 @@ export default async function CustomerDashboard() {
 
       <div className="grid">
         <StatCard title="Menunggu Validasi" value={waiting} note="Perlu konfirmasi Anda" href="/dashboard/tickets" />
-        <StatCard title="Sedang Diproses" value={active} note="Ditangani agen" href="/dashboard/tickets" />
-        <StatCard title="Tiket Baru" value={open} note="Belum diambil agen" href="/dashboard/tickets" />
+        <StatCard title="Sedang Diproses" value={active} note="Ditangani programmer" href="/dashboard/tickets" />
+        <StatCard title="Tiket Baru" value={open} note="Belum diambil programmer" href="/dashboard/tickets" />
         <StatCard title="Selesai" value={closed} note="Tiket tertutup" href="/dashboard/tickets" />
       </div>
 
@@ -105,7 +107,7 @@ export default async function CustomerDashboard() {
                     aria-hidden="true"
                   />
                   <span className="pitem__body">
-                    <Link className="pitem__name" href={`/dashboard/tickets/${ticket.id}`}>
+                    <Link className="pitem__name" href={`/dashboard/tickets/${ticket.id}`} prefetch={false}>
                       {ticket.subject}
                     </Link>
                     <span className="pitem__due">

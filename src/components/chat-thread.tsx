@@ -3,9 +3,13 @@
 import { useRef, useState, useTransition } from "react";
 
 import { sendMessage } from "@/app/actions/workflow";
-import { IconChat, IconSend } from "@/components/icons";
+import { AttachmentDrop, type PendingFile } from "@/components/attachment-drop";
+import { AttachmentStrip } from "@/components/attachment-strip";
+import { IconSend } from "@/components/icons";
+import type { SignedAttachment } from "@/lib/attachments";
 import { relativeTime } from "@/lib/domain/tickets";
-import type { Message } from "@/lib/types/database";
+import { uploadAttachments } from "@/lib/upload-attachments";
+import type { Attachment, Message } from "@/lib/types/database";
 
 type ThreadMessage = Message & { author_name: string | null };
 
@@ -19,20 +23,30 @@ export function ChatThread({
   viewer,
   canPost,
   closedNotice,
+  attachmentsByMessage,
 }: {
   ticketId: string;
   messages: ThreadMessage[];
   viewer: { id: string; role: string };
   canPost: boolean;
   closedNotice?: string;
+  attachmentsByMessage?: Record<string, SignedAttachment[]>;
 }) {
   const [body, setBody] = useState("");
   const [asNote, setAsNote] = useState(false);
+  const [files, setFiles] = useState<PendingFile[]>([]);
   const [error, setError] = useState<string | null>(null);
   const [pending, startTransition] = useTransition();
   const endRef = useRef<HTMLDivElement>(null);
 
   const isStaff = viewer.role === "admin";
+
+  function clearFiles() {
+    for (const item of files) {
+      if (item.previewUrl) URL.revokeObjectURL(item.previewUrl);
+    }
+    setFiles([]);
+  }
 
   function send() {
     const text = body.trim();
@@ -40,10 +54,23 @@ export function ChatThread({
     setError(null);
 
     startTransition(async () => {
+      let uploaded: Attachment[] = [];
+      try {
+        uploaded = await uploadAttachments(ticketId, files);
+      } catch (uploadError) {
+        setError(
+          uploadError instanceof Error
+            ? uploadError.message
+            : "Lampiran gagal diunggah.",
+        );
+        return;
+      }
+
       const result = await sendMessage({
         ticketId,
         body: text,
         kind: asNote ? "note" : "text",
+        attachments: uploaded,
       });
       if (!result.ok) {
         setError(result.error);
@@ -51,6 +78,7 @@ export function ChatThread({
       }
       setBody("");
       setAsNote(false);
+      clearFiles();
       requestAnimationFrame(() =>
         endRef.current?.scrollIntoView({ behavior: "smooth" }),
       );
@@ -59,14 +87,9 @@ export function ChatThread({
 
   return (
     <section className="card">
-      <div className="card__head">
-        <h2 className="card__title">Percakapan</h2>
-        <span className="chip">
-          <IconChat /> {messages.length} pesan
-        </span>
-      </div>
-
-      <div className="thread mt-2">
+      {/* The drawer already titles this panel "Percakapan", so the thread keeps
+          only the body/composer and no second heading. */}
+      <div className="thread">
         {messages.length === 0 && (
           <p className="empty">Belum ada percakapan.</p>
         )}
@@ -87,6 +110,7 @@ export function ChatThread({
               <div className="msg msg--system" key={m.id}>
                 <div className="msg__body">
                   <p className="msg__text">{m.body}</p>
+                  <AttachmentStrip items={attachmentsByMessage?.[m.id] ?? []} />
                 </div>
               </div>
             );
@@ -100,14 +124,15 @@ export function ChatThread({
                     {m.kind === "note"
                       ? "Catatan internal"
                       : m.author_role === "customer"
-                        ? m.author_name ?? "Pelanggan"
-                        : m.author_name ?? "Agen"}
+                        ? m.author_name ?? "Pegawai"
+                        : m.author_name ?? "Programmer"}
                   </span>
                   <span>·</span>
                   <span>{relativeTime(m.created_at)}</span>
                   {m.kind === "solution" && <span>· Solusi</span>}
                 </div>
                 <p className="msg__text">{m.body}</p>
+                <AttachmentStrip items={attachmentsByMessage?.[m.id] ?? []} />
               </div>
             </div>
           );
@@ -128,9 +153,9 @@ export function ChatThread({
               onChange={(e) => setBody(e.target.value)}
               placeholder={
                 asNote
-                  ? "Catatan internal — tidak terlihat oleh pelanggan"
+                  ? "Catatan internal — tidak terlihat oleh pegawai"
                   : isStaff
-                    ? "Balas pelanggan…"
+                    ? "Balas pegawai…"
                     : "Tulis pesan atau tambahan informasi…"
               }
               onKeyDown={(e) => {
@@ -138,6 +163,13 @@ export function ChatThread({
               }}
             />
           </label>
+
+          <AttachmentDrop
+            compact
+            files={files}
+            onChange={setFiles}
+            disabled={pending}
+          />
 
           <div className="composer__row">
             <div className="row row--center">

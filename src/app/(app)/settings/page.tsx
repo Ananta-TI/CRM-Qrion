@@ -1,6 +1,7 @@
 import { Avatar, PageHead } from "@/components/ui";
 import { requireSession } from "@/lib/auth/session";
 import { formatDateTime } from "@/lib/domain/tickets";
+import { CredentialsForm } from "./credentials-form";
 import { ProfileForm } from "./profile-form";
 
 export const metadata = { title: "Pengaturan" };
@@ -13,42 +14,57 @@ export default async function SettingsPage() {
       <PageHead title="Pengaturan" sub="Profil dan preferensi akun Anda." />
 
       <div className="split">
-        <section className="card">
-          <div className="row row--center">
-            <Avatar
-              name={session.profile.full_name}
-              tint={session.profile.avatar_tint}
-              size="xl"
-            />
-            <div>
-              <h2 className="card__title">Profil</h2>
-              <p className="copy">Beginilah agen melihat Anda di dalam tiket.</p>
+        <div className="stack">
+          <section className="card">
+            <div className="row row--center">
+              <Avatar
+                name={session.profile.full_name}
+                tint={session.profile.avatar_tint}
+                size="xl"
+              />
+              <div>
+                <h2 className="card__title">Profil</h2>
+                <p className="copy">Beginilah programmer melihat Anda di dalam tiket.</p>
+              </div>
             </div>
-          </div>
 
-          <hr className="hair" />
+            <hr className="hair" />
 
-          <ProfileForm
-            profile={{
-              full_name: session.profile.full_name,
-              company: session.profile.company,
-              phone: session.profile.phone,
-              timezone: session.profile.timezone,
-            }}
+            <ProfileForm
+              profile={{
+                full_name: session.profile.full_name,
+                company: session.profile.company,
+                phone: session.profile.phone,
+                timezone: session.profile.timezone,
+              }}
+            />
+          </section>
+
+          <CredentialsForm
+            email={session.profile.email}
+            username={session.profile.username}
           />
-        </section>
+        </div>
 
         <aside className="side">
           <section className="card">
             <h2 className="card__title">Akun</h2>
             <dl className="dl mt-2">
               <div>
+                <dt>Username</dt>
+                <dd>
+                  {session.profile.username
+                    ? `@${session.profile.username}`
+                    : "Belum diatur"}
+                </dd>
+              </div>
+              <div>
                 <dt>Email</dt>
                 <dd>{session.profile.email}</dd>
               </div>
               <div>
                 <dt>Role</dt>
-                <dd style={{ textTransform: "capitalize" }}>{session.profile.role}</dd>
+                <dd>{session.profile.role === "admin" ? "Programmer" : "Pegawai"}</dd>
               </div>
               <div>
                 <dt>Status</dt>
@@ -62,10 +78,10 @@ export default async function SettingsPage() {
           </section>
 
           <section className="card">
-            <h2 className="card__title">Keamanan</h2>
+            <h2 className="card__title">Tips keamanan</h2>
             <p className="copy mt-1">
-              Password dan sesi dikelola oleh Supabase Auth. Untuk mengganti
-              password, gunakan tautan pemulihan yang dikirim ke email Anda.
+              Ganti password awal setelah masuk pertama kali. Setelah password
+              diganti, semua perangkat lain otomatis dikeluarkan.
             </p>
           </section>
         </aside>

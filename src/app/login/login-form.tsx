@@ -13,13 +13,13 @@ export function LoginForm() {
       {state.notice && <p className="form-note form-note--ok">{state.notice}</p>}
 
       <label className="field">
-        <span>Email</span>
+        <span>Email atau username</span>
         <input
-          name="email"
-          type="email"
+          name="identifier"
           required
-          autoComplete="email"
-          placeholder="nama@perusahaan.com"
+          minLength={3}
+          autoComplete="username"
+          placeholder="nama@perusahaan.com atau bang.ridho"
         />
       </label>
 

@@ -1,5 +1,4 @@
 import {
-  ESCALATION_STYLE,
   STATUS_STYLE,
   URGENCY_STYLE,
   formatDate,
@@ -7,11 +6,7 @@ import {
   initials,
   slaState,
 } from "@/lib/domain/tickets";
-import type {
-  EscalationLevel,
-  TicketStatus,
-  UrgencyLevel,
-} from "@/lib/types/database";
+import type { TicketStatus, UrgencyLevel } from "@/lib/types/database";
 import { IconStar } from "./icons";
 import { PageHeadClient } from "./page-head-client";
 
@@ -47,11 +42,6 @@ export function UrgencyPill({ urgency }: { urgency: UrgencyLevel }) {
   );
 }
 
-export function LevelPill({ level }: { level: EscalationLevel }) {
-  const style = ESCALATION_STYLE[level];
-  return <span className={`pill ${style.pill}`}>{style.label}</span>;
-}
-
 export function CategoryTag({ category }: { category: string }) {
   return <span className="tag">{category}</span>;
 }
@@ -64,15 +54,29 @@ export function SlaMeter({
   deadline,
   status,
   breached,
+  paused = false,
+  pausedAt,
+  pausedMinutes = 0,
   showWindow = true,
 }: {
   createdAt: string;
   deadline: string | null;
   status: TicketStatus;
   breached?: boolean;
+  paused?: boolean;
+  pausedAt?: string | null;
+  pausedMinutes?: number;
   showWindow?: boolean;
 }) {
-  const state = slaState({ createdAt, deadline, status, breached });
+  const state = slaState({
+    createdAt,
+    deadline,
+    status,
+    breached,
+    paused,
+    pausedAt,
+    pausedMinutes,
+  });
 
   return (
     <div className="kcard__sla">
@@ -88,7 +92,9 @@ export function SlaMeter({
             ? "SLA terlampaui"
             : state.tone === "met"
               ? "Selesai"
-              : "Sisa waktu SLA"}
+              : state.tone === "paused"
+                ? "SLA dijeda"
+                : "Sisa waktu SLA"}
         </span>
         <span>{state.label}</span>
       </div>

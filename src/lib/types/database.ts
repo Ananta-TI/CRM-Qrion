@@ -8,17 +8,20 @@ export type EscalationLevel = "L1" | "L2" | "L3";
 export type MessageAuthorRole = "customer" | "agent" | "system";
 export type MessageKind = "text" | "note" | "system" | "solution";
 export type TicketCategory =
+  | "Server"
+  | "Teknis"
+  | "Keuangan"
+  | "Akun"
   | "Transaksi"
   | "Pembayaran"
   | "Pengiriman"
-  | "Akun"
-  | "Teknis"
   | "Produk"
   | "Lainnya";
 
 export type Profile = {
   id: string;
   email: string;
+  username: string | null;
   full_name: string;
   role: UserRole;
   company: string | null;
@@ -26,6 +29,7 @@ export type Profile = {
   avatar_tint: string | null;
   timezone: string | null;
   is_active: boolean;
+  notifications_seen_at: string | null;
   created_at: string;
   updated_at: string;
 };
@@ -48,6 +52,10 @@ export type Ticket = {
   attachments: Attachment[];
   sla_policy_minutes: number | null;
   sla_deadline: string | null;
+  /** When the customer-wait clock started; null means the SLA is running. */
+  sla_paused_at: string | null;
+  /** Completed customer-wait minutes, excluded from SLA analytics. */
+  sla_paused_minutes: number;
   first_response_at: string | null;
   resolved_at: string | null;
   closed_at: string | null;
@@ -101,6 +109,19 @@ export type TicketEvent = {
   created_at: string;
 };
 
+/** Account-level notification shown in the same bell as ticket activity. */
+export type Notification = {
+  id: string;
+  recipient_id: string;
+  actor_id: string | null;
+  kind: string;
+  title: string;
+  body: string | null;
+  href: string | null;
+  read_at: string | null;
+  created_at: string;
+};
+
 export type SlaPolicy = {
   urgency: UrgencyLevel;
   level: EscalationLevel;
@@ -108,26 +129,10 @@ export type SlaPolicy = {
   resolve_minutes: number;
 };
 
-export type TicketKnowledge = {
+export type Programmer = {
   id: string;
-  ticket_code: string;
-  subject: string;
-  description: string;
-  category: TicketCategory;
-  urgency: UrgencyLevel;
-  status: TicketStatus;
-  escalation_level: EscalationLevel;
-  resolution_summary: string | null;
-  tags: string[];
-  csat_score: number | null;
-  reopen_count: number;
-  created_at: string;
-  closed_at: string | null;
-  sla_deadline: string | null;
-  sla_breached: boolean;
-  hours_to_close: number | null;
-  customer_name: string;
-  agent_name: string | null;
+  full_name: string;
+  avatar_tint: string | null;
 };
 
 type Table<Row, Insert = Partial<Row>, Update = Partial<Row>> = {
@@ -137,8 +142,6 @@ type Table<Row, Insert = Partial<Row>, Update = Partial<Row>> = {
   Relationships: [];
 };
 
-type View<Row> = { Row: Row; Relationships: [] };
-
 export type Database = {
   public: {
     Tables: {
@@ -146,18 +149,32 @@ export type Database = {
       tickets: Table<Ticket>;
       messages: Table<Message>;
       ticket_events: Table<TicketEvent>;
+      notifications: Table<Notification>;
       sla_policy: Table<SlaPolicy>;
     };
-    Views: {
-      ticket_knowledge: View<TicketKnowledge>;
-    };
+    Views: Record<string, never>;
     Functions: {
       apply_sla: { Args: { p_ticket: string }; Returns: undefined };
       refresh_sla_breaches: { Args: Record<string, never>; Returns: number };
+      pause_ticket_sla: { Args: { p_ticket: string }; Returns: undefined };
+      resume_ticket_sla: { Args: { p_ticket: string }; Returns: undefined };
+      auto_close_stale_tickets: { Args: { p_days: number }; Returns: number };
       current_role_name: { Args: Record<string, never>; Returns: UserRole };
       is_staff: { Args: Record<string, never>; Returns: boolean };
       is_admin: { Args: Record<string, never>; Returns: boolean };
+      is_programmer: { Args: { p_user: string }; Returns: boolean };
+      list_programmers: { Args: Record<string, never>; Returns: Programmer[] };
       can_access_ticket: { Args: { p_ticket: string }; Returns: boolean };
+      email_for_username: { Args: { p_username: string }; Returns: string | null };
+      notify_programmers: {
+        Args: {
+          p_kind: string;
+          p_title: string;
+          p_body?: string | null;
+          p_href?: string | null;
+        };
+        Returns: number;
+      };
       get_my_profile: { Args: Record<string, never>; Returns: Profile[] };
       get_nav_counts: {
         Args: Record<string, never>;

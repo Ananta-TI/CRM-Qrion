@@ -3,6 +3,7 @@
 import { useActionState } from "react";
 
 import { signUp, type AuthState } from "@/app/actions/auth";
+import { USERNAME_HINT, USERNAME_PATTERN } from "@/lib/auth/username";
 
 export function RegisterForm() {
   const [state, action, pending] = useActionState<AuthState, FormData>(signUp, {});
@@ -33,6 +34,22 @@ export function RegisterForm() {
           autoComplete="email"
           placeholder="nama@perusahaan.com"
         />
+      </label>
+
+      <label className="field">
+        <span>
+          Username <em style={{ opacity: 0.6 }}>(opsional)</em>
+        </span>
+        <input
+          name="username"
+          pattern={USERNAME_PATTERN}
+          maxLength={32}
+          autoComplete="username"
+          placeholder="budi.santoso"
+        />
+        <span className="copy" style={{ fontSize: 12 }}>
+          {USERNAME_HINT} Bisa diatur nanti di Pengaturan.
+        </span>
       </label>
 
       <div className="form-grid">

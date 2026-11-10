@@ -3,26 +3,24 @@
 import { revalidatePath } from "next/cache";
 import { z } from "zod";
 
+import { attachmentsSchema } from "@/lib/attachment-schema";
 import { requireSession } from "@/lib/auth/session";
 import { createClient } from "@/lib/supabase/server";
-import { triageCategory, triageUrgency } from "@/lib/domain/tickets";
-import type { Attachment } from "@/lib/types/database";
+import {
+  TICKET_CATEGORIES,
+  triageCategory,
+  triageUrgency,
+} from "@/lib/domain/tickets";
+import type { Attachment, TicketCategory } from "@/lib/types/database";
 
 export type ActionResult<T = undefined> =
   | { ok: true; data: T }
   | { ok: false; error: string; fieldErrors?: Record<string, string> };
 
-const attachmentSchema = z.object({
-  path: z.string().min(1).max(512),
-  name: z.string().min(1).max(256),
-  mime: z.string().min(1).max(128),
-  size: z.number().nonnegative(),
-});
-
 /**
- * The email-style submission. The caller supplies only what a person would
- * type into an email — subject, body, and any files they attached. Category
- * and priority are inferred; the SLA deadline is pinned by a DB trigger.
+ * The email-style submission. The caller supplies subject, body, an optional
+ * category, and any files they attached. Priority is inferred; the SLA
+ * deadline is pinned by a DB trigger.
  */
 const createTicketSchema = z.object({
   subject: z
@@ -35,7 +33,13 @@ const createTicketSchema = z.object({
     .trim()
     .min(10, "Ceritakan keluhan Anda minimal 10 karakter.")
     .max(5000, "Deskripsi maksimal 5000 karakter."),
-  attachments: z.array(attachmentSchema).max(10).optional(),
+  attachments: attachmentsSchema.optional(),
+  /** Employee-selected category; omitted means use the keyword heuristic. */
+  category: z
+    .enum(TICKET_CATEGORIES as [TicketCategory, ...TicketCategory[]])
+    .optional(),
+  /** Specific programmer, or null/omitted for the shared "All" queue. */
+  assigneeId: z.string().uuid("Programmer tujuan tidak valid.").nullable().optional(),
 });
 
 export type CreateTicketInput = z.input<typeof createTicketSchema>;
@@ -88,11 +92,13 @@ export async function createTicket(
     note: t.subject,
   }));
 
-  // Category and priority are the system's call — the user never picks them.
-  const category = triageCategory({
-    subject: data.subject,
-    description: data.description,
-  });
+  // The employee may pick the category; priority stays the system's call.
+  const category =
+    data.category ??
+    triageCategory({
+      subject: data.subject,
+      description: data.description,
+    });
   const urgency = triageUrgency({
     subject: data.subject,
     description: data.description,
@@ -105,6 +111,7 @@ export async function createTicket(
     .from("tickets")
     .insert({
       customer_id: session.userId,
+      assignee_id: data.assigneeId ?? null,
       subject: data.subject,
       description: data.description,
       category,
@@ -119,21 +126,33 @@ export async function createTicket(
     .single();
 
   if (error || !created) {
-    return { ok: false, error: error?.message ?? "Gagal membuat tiket." };
+    return {
+      ok: false,
+      error:
+        error?.message.includes("row-level security") && data.assigneeId
+          ? "Programmer tujuan tidak valid. Pilih programmer lain atau target Semua."
+          : error?.message ?? "Gagal membuat tiket.",
+    };
   }
 
-  // Record the audit trail. The thread intentionally starts empty until an
-  // agent writes the first message; the customer-side chat stays locked.
+  // Record the audit trail. The thread intentionally starts empty; the
+  // customer can write immediately after the ticket exists.
   await supabase.from("ticket_events").insert({
     ticket_id: created.id,
     actor_id: session.userId,
     event_type: "created",
     to_value: "Open",
-    note: `Kategori otomatis: ${category} · Prioritas otomatis: ${urgency}`,
+    note: `Kategori: ${category} (${
+      data.category ? "dipilih pegawai" : "otomatis"
+    }) · Prioritas otomatis: ${urgency}${
+      data.assigneeId ? " · Ditugaskan ke programmer pilihan" : ""
+    }`,
   });
 
   revalidatePath("/dashboard");
   revalidatePath("/dashboard/tickets");
+  revalidatePath("/agent");
+  revalidatePath("/agent/board");
 
   return { ok: true, data: { id: created.id, code: created.ticket_code } };
 }

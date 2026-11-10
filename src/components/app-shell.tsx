@@ -14,21 +14,9 @@ import {
 
 import { signOut } from "@/app/actions/auth";
 import { useHeader } from "@/components/header-context";
-import {
-  IconBook,
-  IconChart,
-  IconClose,
-  IconDashboard,
-  IconGear,
-  IconLogo,
-  IconLogout,
-  IconMenu,
-  IconShield,
-  IconTasks,
-  IconTeam,
-  IconTicket,
-} from "@/components/icons";
-import { NotificationBell } from "@/components/notification-bell";
+import { IconClose, IconLogout, IconMenu } from "@/components/icons";
+import { NotificationBell, NotificationProvider } from "@/components/notification-bell";
+import { QrionLogo } from "@/components/qrion-logo";
 import { Avatar } from "@/components/ui";
 
 type NavItem = {
@@ -37,6 +25,7 @@ type NavItem = {
   icon: React.ReactNode;
   badge?: number;
   exact?: boolean;
+  match?: string[];
 };
 
 /** The document's spring values. */
@@ -64,7 +53,13 @@ export function AppShell({
   nav,
 }: {
   children: React.ReactNode;
-  profile: { full_name: string; email: string; role: string; avatar_tint: string | null };
+  profile: {
+    full_name: string;
+    email: string;
+    role: string;
+    avatar_tint: string | null;
+    username?: string | null;
+  };
   nav: NavItem[];
 }) {
   const pathname = usePathname();
@@ -81,8 +76,14 @@ export function AppShell({
   // pushing state from an effect when the viewport crosses the boundary.
   const showDrawer = isMobile && drawerOpen;
 
-  const isActive = (item: NavItem) =>
-    item.exact ? pathname === item.href : pathname.startsWith(item.href);
+  const isActive = (item: NavItem) => {
+    // Segment-aware: `/dashboard/ticketsX` must not light up "Tiket Saya".
+    const owns = (prefix: string) =>
+      pathname === prefix || pathname.startsWith(`${prefix}/`);
+
+    if (item.exact) return pathname === item.href;
+    return owns(item.href) || (item.match ?? []).some(owns);
+  };
 
   // Split nav into "main" and "general" groups the way the reference does.
   const main = nav.filter((n) => !n.href.startsWith("/settings") && !n.href.startsWith("/admin"));
@@ -167,9 +168,11 @@ export function AppShell({
               </span>
             ))}
           </nav>
-        ) : (
+        ) : !spec ? (
+          // Only while the page has not published a header yet. Showing this
+          // after mount left a permanent grey bar above every title.
           <div className="skel skel--crumbs" />
-        )}
+        ) : null}
         <h1 className="top__title">{spec?.title ?? <span className="skel skel--title" />}</h1>
         {spec?.sub && <p className="phead__sub">{spec.sub}</p>}
       </div>
@@ -184,7 +187,7 @@ export function AppShell({
   );
 
   return (
-    <>
+    <NotificationProvider>
       <header className="mobilebar">
         <button
           className="icon-btn"
@@ -196,8 +199,7 @@ export function AppShell({
           <IconMenu />
         </button>
         <Link className="brand" href="/" aria-label="Qrion — beranda">
-          <IconLogo className="brand__mark" />
-          <span className="brand__name">Qrion</span>
+          <QrionLogo />
         </Link>
         <NotificationBell staff={staff} />
       </header>
@@ -216,8 +218,7 @@ export function AppShell({
       >
         <div className="sidebar__top">
           <Link className="brand" href="/" aria-label="Qrion — beranda">
-            <IconLogo className="brand__mark" />
-            <span className="brand__name">Qrion</span>
+            <QrionLogo />
           </Link>
           <button
             className="icon-btn sidebar__close"
@@ -242,7 +243,9 @@ export function AppShell({
           />
           <div className="sideuser__body">
             <p className="sideuser__name">{profile.full_name}</p>
-            <p className="sideuser__mail">{profile.email}</p>
+            <p className="sideuser__mail" title={profile.email}>
+              {profile.username ? `@${profile.username}` : profile.email}
+            </p>
           </div>
           <button
             className="icon-btn icon-btn--soft"
@@ -262,18 +265,8 @@ export function AppShell({
           {children}
         </main>
       </div>
-    </>
+    </NotificationProvider>
   );
 }
 
-/** Icon shorthand so pages can build their own nav arrays. */
-export const navIcons = {
-  dashboard: <IconDashboard />,
-  ticket: <IconTicket />,
-  tasks: <IconTasks />,
-  chart: <IconChart />,
-  team: <IconTeam />,
-  book: <IconBook />,
-  gear: <IconGear />,
-  shield: <IconShield />,
-};
+

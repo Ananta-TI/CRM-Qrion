@@ -48,6 +48,32 @@ export const STATUSES: TicketStatus[] = [
   "Closed",
 ];
 
+/** A customer may bring a closed ticket back for this many days. */
+export const REOPEN_WINDOW_DAYS = 7;
+
+export const TICKET_CATEGORIES: TicketCategory[] = [
+  "Server",
+  "Teknis",
+  "Keuangan",
+  "Akun",
+  "Transaksi",
+  "Pembayaran",
+  "Pengiriman",
+  "Produk",
+  "Lainnya",
+];
+
+/** True while the ticket is still inside its customer-reopen window. */
+export function canCustomerReopen(
+  closedAt: string | null | undefined,
+  now = Date.now(),
+): boolean {
+  if (!closedAt) return false;
+  const closed = new Date(closedAt).getTime();
+  if (!Number.isFinite(closed)) return false;
+  return now - closed <= REOPEN_WINDOW_DAYS * 86_400_000;
+}
+
 export const STATUS_STYLE: Record<TicketStatus, { pill: string; seg: string }> = {
   Open: { pill: "pill--open", seg: "seg--open" },
   "In Progress": { pill: "pill--prog", seg: "seg--prog" },
@@ -67,21 +93,7 @@ export function canTransition(from: TicketStatus, to: TicketStatus): boolean {
   return STATUS_TRANSITIONS[from].includes(to);
 }
 
-/** The escalation ladder. Each hop shortens the SLA target. */
-export const ESCALATION_LEVELS: EscalationLevel[] = ["L1", "L2", "L3"];
-
-export const ESCALATION_STYLE: Record<EscalationLevel, { label: string; pill: string }> = {
-  L1: { label: "L1 · Frontline", pill: "pill--l1" },
-  L2: { label: "L2 · Technical", pill: "pill--l2" },
-  L3: { label: "L3 · Management", pill: "pill--l3" },
-};
-
-export function nextLevel(level: EscalationLevel): EscalationLevel | null {
-  const i = ESCALATION_LEVELS.indexOf(level);
-  return i >= 0 && i < ESCALATION_LEVELS.length - 1
-    ? ESCALATION_LEVELS[i + 1]
-    : null;
-}
+/** The escalation ladder is retained only for the SLA policy matrix. */
 
 // -----------------------------------------------------------------------------
 // SLA
@@ -90,6 +102,9 @@ export function nextLevel(level: EscalationLevel): EscalationLevel | null {
  * Client-side mirror of the sla_policy table. The database is authoritative —
  * this is used to preview a deadline before the row exists, and to render
  * policy documentation. Keep the values aligned with 0001_init.sql.
+ *
+ * The level axis is retained because the DB trigger still derives the SLA from
+ * `escalation_level`; the UI no longer exposes escalation actions.
  */
 export const SLA_POLICY: Record<
   EscalationLevel,
@@ -123,21 +138,37 @@ export function slaTarget(
 }
 
 export type SlaState = {
-  /** "ok" | "soon" | "breached" | "met" */
-  tone: "ok" | "soon" | "breached" | "met";
+  /** "ok" | "soon" | "breached" | "met" | "paused" */
+  tone: "ok" | "soon" | "breached" | "met" | "paused";
   label: string;
   /** Percentage of the SLA window consumed, clamped 0..100. */
   used: number;
   hoursLeft: number;
 };
 
+/**
+ * The SLA clock only runs while the ball is in the agent's court. `pausedAt`
+ * freezes the meter at the moment the ticket started waiting on the customer;
+ * `pausedMinutes` removes completed waiting periods from the elapsed time.
+ */
 export function slaState(input: {
   createdAt: string;
   deadline: string | null;
   status: TicketStatus;
   breached?: boolean;
+  paused?: boolean;
+  pausedAt?: string | null;
+  pausedMinutes?: number;
 }): SlaState {
-  const { createdAt, deadline, status, breached } = input;
+  const {
+    createdAt,
+    deadline,
+    status,
+    breached,
+    paused = false,
+    pausedAt,
+    pausedMinutes = 0,
+  } = input;
 
   if (status === "Closed") {
     return { tone: "met", label: "Closed", used: 100, hoursLeft: 0 };
@@ -149,10 +180,16 @@ export function slaState(input: {
 
   const start = new Date(createdAt).getTime();
   const end = new Date(deadline).getTime();
-  const now = Date.now();
+  const frozenAt = paused && pausedAt ? new Date(pausedAt).getTime() : Date.now();
+  const now = Number.isFinite(frozenAt) ? frozenAt : Date.now();
 
-  const total = Math.max(end - start, 1);
-  const used = Math.min(Math.max(((now - start) / total) * 100, 0), 100);
+  // The deadline has already been pushed out by every completed pause, so the
+  // base window is the extended span minus those paused minutes. Without this,
+  // the meter would understate how much of the target has actually been used.
+  const pausedMs = Math.max(pausedMinutes, 0) * 60_000;
+  const total = Math.max(end - start - pausedMs, 1);
+  const elapsed = now - start - pausedMs;
+  const used = Math.min(Math.max((elapsed / total) * 100, 0), 100);
   const hoursLeft = (end - now) / 3_600_000;
 
   if (breached || hoursLeft <= 0) {
@@ -160,6 +197,15 @@ export function slaState(input: {
       tone: "breached",
       label: `Lewat ${formatDuration(-hoursLeft)}`,
       used: 100,
+      hoursLeft,
+    };
+  }
+
+  if (paused) {
+    return {
+      tone: "paused",
+      label: "Menunggu balasan pelanggan",
+      used,
       hoursLeft,
     };
   }
@@ -217,6 +263,21 @@ export function formatCurrency(value: number | null | undefined): string {
   }).format(value);
 }
 
+/**
+ * Strip the characters PostgREST treats as filter syntax before interpolating
+ * a user's query into `.or(...)`. Without this, a comma or parenthesis can end
+ * the intended `ilike` clause and inject another filter.
+ *
+ * This is a query-safety guard, not a relevance transform: spaces are kept so
+ * multi-word searches still work.
+ */
+export function sanitizeSearchTerm(value: string): string {
+  return value
+    .replace(/[%,()*"\\]/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
 export function relativeTime(value: string): string {
   const diff = Date.now() - new Date(value).getTime();
   const mins = Math.round(diff / 60_000);
@@ -249,6 +310,22 @@ export function slug(value: string): string {
 
 /** Keyword → category. First match wins, so order matters a little. */
 const CATEGORY_KEYWORDS: [TicketCategory, string[]][] = [
+  [
+    "Server",
+    [
+      "server", "server down", "hosting", "vps", "database", "jaringan",
+      "internet", "koneksi", "uptime", "outage", "downtime", "maintenance",
+      "cloud", "backup", "domain", "dns", "ssl", "deploy", "production",
+    ],
+  ],
+  [
+    "Keuangan",
+    [
+      "keuangan", "finance", "gaji", "payroll", "anggaran", "budget",
+      "laporan keuangan", "pajak", "reimbursement", "pengeluaran",
+      "pemasukan", "kas", "akuntansi",
+    ],
+  ],
   [
     "Pembayaran",
     [
@@ -283,9 +360,9 @@ const CATEGORY_KEYWORDS: [TicketCategory, string[]][] = [
   [
     "Teknis",
     [
-      "error", "bug", "server", "aplikasi", "app", "website", "loading",
-      "lemot", "crash", "gangguan", "sistem", "tidak bisa dibuka", "blank",
-      "tampilan", "500", "maintenance",
+      "error", "bug", "aplikasi", "app", "website", "loading", "lemot",
+      "crash", "gangguan", "sistem", "tidak bisa dibuka", "blank",
+      "tampilan", "500",
     ],
   ],
   [
@@ -298,8 +375,8 @@ const CATEGORY_KEYWORDS: [TicketCategory, string[]][] = [
 ];
 
 /**
- * Guesses the complaint's category from its wording when the user has not
- * picked one (the email-style form does not ask). Falls back to "Lainnya".
+ * Guesses the complaint's category from its wording when the employee left the
+ * form on auto-detect. Falls back to "Lainnya".
  */
 export function triageCategory(input: {
   subject: string;
@@ -357,7 +434,14 @@ export function triageUrgency(input: {
   if (critical.some((k) => text.includes(k))) score += 3;
   if (high.some((k) => text.includes(k))) score += 1;
 
-  if (category === "Pembayaran" || category === "Transaksi") score += 1;
+  if (
+    category === "Pembayaran" ||
+    category === "Transaksi" ||
+    category === "Keuangan" ||
+    category === "Server"
+  ) {
+    score += 1;
+  }
   if ((input.amount ?? 0) >= 5_000_000) score += 2;
   else if ((input.amount ?? 0) >= 1_000_000) score += 1;
 

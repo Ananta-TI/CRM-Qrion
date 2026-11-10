@@ -1,12 +1,14 @@
 import type { ReactNode } from "react";
 
 import {
-  IconBook,
   IconChart,
+  IconDashboard,
+  IconGear,
   IconPlus,
+  IconTasks,
   IconTeam,
+  IconTicket,
 } from "@/components/icons";
-import { navIcons } from "@/components/app-shell";
 import { isStaff } from "@/lib/auth/session";
 import type { UserRole } from "@/lib/types/database";
 
@@ -16,6 +18,12 @@ export type NavItem = {
   icon: ReactNode;
   badge?: number;
   exact?: boolean;
+  /**
+   * Extra path prefixes that belong to this item even though they live on a
+   * different route — reading a ticket is part of "Board Tiket", so the sidebar
+   * keeps that entry highlighted instead of going blank.
+   */
+  match?: string[];
 };
 
 /**
@@ -35,35 +43,41 @@ export const EMPTY_COUNTS: NavCounts = { customerActive: 0, staffOpen: 0 };
  * The single source of truth for the sidebar. Previously every page built its
  * own copy inline; moving the shell into the layout means the nav has to be
  * derivable from the role alone.
+ *
+ * The icons are created here, in a server module, on purpose. This function
+ * runs in the server layout while `AppShell` is a client component, so a
+ * shared element constant imported from the client module would arrive as a
+ * module-reference stub — every icon silently rendered as an empty box.
+ * Building each element inline (like `<IconPlus />` below) is what actually
+ * crosses the boundary.
  */
 export function buildNav(role: UserRole, counts: NavCounts): NavItem[] {
   if (isStaff(role)) {
     return [
-      { href: "/agent", label: "Ringkasan", icon: navIcons.dashboard, exact: true },
+      { href: "/agent", label: "Ringkasan", icon: <IconDashboard />, exact: true },
       {
         href: "/agent/board",
         label: "Board Tiket",
-        icon: navIcons.tasks,
+        icon: <IconTasks />,
         badge: counts.staffOpen || undefined,
+        match: ["/agent/tickets"],
       },
-      { href: "/knowledge", label: "Knowledge Base", icon: <IconBook /> },
       { href: "/agent/analytics", label: "Analitik", icon: <IconChart /> },
       // Only admins reach this area at all (requireStaff), so it is always shown.
       { href: "/admin/users", label: "Kelola Pengguna", icon: <IconTeam /> },
-      { href: "/settings", label: "Pengaturan", icon: navIcons.gear },
+      { href: "/settings", label: "Pengaturan", icon: <IconGear /> },
     ];
   }
 
   return [
-    { href: "/dashboard", label: "Dashboard", icon: navIcons.dashboard, exact: true },
+    { href: "/dashboard", label: "Dashboard", icon: <IconDashboard />, exact: true },
     {
       href: "/dashboard/tickets",
       label: "Tiket Saya",
-      icon: navIcons.ticket,
+      icon: <IconTicket />,
       badge: counts.customerActive || undefined,
     },
     { href: "/dashboard/new", label: "Ajukan Keluhan", icon: <IconPlus /> },
-    { href: "/knowledge", label: "Knowledge Base", icon: <IconBook /> },
-    { href: "/settings", label: "Pengaturan", icon: navIcons.gear },
+    { href: "/settings", label: "Pengaturan", icon: <IconGear /> },
   ];
 }

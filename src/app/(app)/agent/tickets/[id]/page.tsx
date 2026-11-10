@@ -5,14 +5,13 @@ import { AttachmentStrip } from "@/components/attachment-strip";
 import { ConversationDrawer } from "@/components/conversation-drawer";
 import {
   Avatar,
-  LevelPill,
   PageHead,
   Rating,
   SlaMeter,
   StatusPill,
   UrgencyPill,
 } from "@/components/ui";
-import { signAttachments } from "@/lib/attachments";
+import { signAttachments, signMessageAttachments } from "@/lib/attachments";
 import { isStaff, requireStaff } from "@/lib/auth/session";
 import { formatCurrency, formatDate, formatDateTime } from "@/lib/domain/tickets";
 import { createClient } from "@/lib/supabase/server";
@@ -27,11 +26,29 @@ export default async function AgentTicketDetail({
   const { id } = await params;
   const supabase = await createClient();
 
-  const { data: ticket } = await supabase
+  // Start the independent ticket/message/event reads together instead of
+  // paying a serial round-trip before the thread can load.
+  const ticketPromise = supabase
     .from("tickets")
     .select("*")
     .eq("id", id)
+    // Explicit assignment scope, independent of RLS: a programmer must never
+    // read another programmer's assigned ticket.
+    .or(`assignee_id.is.null,assignee_id.eq.${session.userId}`)
     .single();
+  const messagesPromise = supabase
+    .from("messages")
+    .select("*")
+    .eq("ticket_id", id)
+    .order("created_at", { ascending: true });
+  const eventsPromise = supabase
+    .from("ticket_events")
+    .select("*")
+    .eq("ticket_id", id)
+    .order("created_at", { ascending: false })
+    .limit(20);
+
+  const { data: ticket } = await ticketPromise;
 
   if (!ticket) notFound();
 
@@ -41,39 +58,40 @@ export default async function AgentTicketDetail({
     { data: agent },
     { data: events },
   ] = await Promise.all([
-    supabase
-      .from("messages")
-      .select("*")
-      .eq("ticket_id", id)
-      .order("created_at", { ascending: true }),
+    messagesPromise,
     supabase.from("profiles").select("*").eq("id", ticket.customer_id).single(),
     ticket.assignee_id
       ? supabase.from("profiles").select("*").eq("id", ticket.assignee_id).single()
       : Promise.resolve({ data: null }),
-    supabase
-      .from("ticket_events")
-      .select("*")
-      .eq("ticket_id", id)
-      .order("created_at", { ascending: false })
-      .limit(20),
+    eventsPromise,
   ]);
 
   const messages = (rawMessages ?? []).map((m) => ({
     ...m,
     author_name:
       m.author_id === ticket.customer_id
-        ? customer?.full_name ?? "Pelanggan"
+        ? customer?.full_name ?? "Pegawai"
         : m.author_id === ticket.assignee_id
-          ? agent?.full_name ?? "Agen"
+          ? agent?.full_name ?? "Programmer"
           : m.author_id === session.userId
             ? session.profile.full_name
-            : "Agen",
+            : "Programmer",
   }));
 
   // Staff see internal notes in the thread.
   const canPost = ticket.status !== "Closed" || isStaff(session.profile.role);
 
-  const ticketAttachments = await signAttachments(ticket.attachments);
+  const [ticketAttachments, messageAttachments] = await Promise.all([
+    signAttachments(ticket.attachments),
+    signMessageAttachments(messages),
+  ]);
+
+  // `transaction_history` is JSONB written by triage, which happily stores
+  // `[{}]` for tickets that have no transaction at all. Rendering that verbatim
+  // showed a table whose every cell was "—", so empty entries are dropped.
+  const transactions = ticket.transaction_history.filter(
+    (tx) => tx.ref || tx.date || tx.amount != null || tx.status || tx.note,
+  );
 
   return (
     <>
@@ -94,6 +112,7 @@ export default async function AgentTicketDetail({
           viewer={{ id: session.userId, role: session.profile.role }}
           canPost={canPost}
           closedNotice="Tiket ditutup. Buka kembali lewat panel tindakan untuk membalas."
+          attachmentsByMessage={messageAttachments}
         />
       </PageHead>
 
@@ -101,7 +120,7 @@ export default async function AgentTicketDetail({
         <div className="stack">
           <section className="card">
             <div className="card__head">
-              <h2 className="card__title">Keluhan pelanggan</h2>
+              <h2 className="card__title">Keluhan pegawai</h2>
               <div className="row row--center">
                 <StatusPill status={ticket.status} />
                 <UrgencyPill urgency={ticket.urgency} />
@@ -113,7 +132,7 @@ export default async function AgentTicketDetail({
 
             <AttachmentStrip items={ticketAttachments} />
 
-            {ticket.transaction_history.length > 0 && (
+            {transactions.length > 0 && (
               <>
                 <hr className="hair" />
                 <h3 className="card__title" style={{ fontSize: 14 }}>
@@ -130,7 +149,7 @@ export default async function AgentTicketDetail({
                       </tr>
                     </thead>
                     <tbody>
-                      {ticket.transaction_history.map((tx, i) => (
+                      {transactions.map((tx, i) => (
                         <tr key={`${tx.ref ?? i}`}>
                           <td className="code-ref">{tx.ref ?? "—"}</td>
                           <td>{formatDate(tx.date ?? null)}</td>
@@ -145,10 +164,7 @@ export default async function AgentTicketDetail({
             )}
           </section>
 
-          <AgentTicketControls
-            ticket={ticket}
-            isAssignee={ticket.assignee_id === session.userId}
-          />
+          <AgentTicketControls ticket={ticket} />
 
           <section className="card">
             <div className="card__head">
@@ -158,7 +174,7 @@ export default async function AgentTicketDetail({
             <p className="copy mt-2">
               Diskusi tiket ini dibuka di panel samping. Buka lewat tombol
               <strong> Percakapan </strong>
-              di atas untuk membaca dan membalas pelanggan.
+              di atas untuk membaca dan membalas pegawai.
             </p>
           </section>
         </div>
@@ -172,6 +188,9 @@ export default async function AgentTicketDetail({
               deadline={ticket.sla_deadline}
               status={ticket.status}
               breached={ticket.sla_breached}
+              paused={Boolean(ticket.sla_paused_at)}
+              pausedAt={ticket.sla_paused_at}
+              pausedMinutes={ticket.sla_paused_minutes}
             />
 
             <hr className="hair" />
@@ -180,12 +199,6 @@ export default async function AgentTicketDetail({
               <div>
                 <dt>Kategori</dt>
                 <dd>{ticket.category}</dd>
-              </div>
-              <div>
-                <dt>Level</dt>
-                <dd>
-                  <LevelPill level={ticket.escalation_level} />
-                </dd>
               </div>
               <div>
                 <dt>Target SLA</dt>
@@ -251,7 +264,7 @@ export default async function AgentTicketDetail({
           </section>
 
           <section className="card">
-            <h2 className="card__title">Pelanggan</h2>
+            <h2 className="card__title">Pegawai</h2>
             {customer && (
               <div className="row row--center mt-2">
                 <Avatar name={customer.full_name} tint={customer.avatar_tint} size="lg" />
@@ -266,7 +279,7 @@ export default async function AgentTicketDetail({
           </section>
 
           <section className="card">
-            <h2 className="card__title">Agen</h2>
+            <h2 className="card__title">Programmer</h2>
             {agent ? (
               <div className="row row--center mt-2">
                 <Avatar name={agent.full_name} tint={agent.avatar_tint} size="lg" />
@@ -276,7 +289,7 @@ export default async function AgentTicketDetail({
                 </div>
               </div>
             ) : (
-              <p className="copy mt-2">Belum ada agen yang mengambil tiket ini.</p>
+              <p className="copy mt-2">Tiket ini terbuka untuk semua programmer.</p>
             )}
           </section>
 

@@ -1,7 +1,8 @@
 import Link from "next/link";
 import { redirect } from "next/navigation";
 
-import { IconCheck, IconLogo } from "@/components/icons";
+import { IconCheck } from "@/components/icons";
+import { QrionLogo } from "@/components/qrion-logo";
 import { getSession, homeFor } from "@/lib/auth/session";
 import { LoginForm } from "./login-form";
 
@@ -16,26 +17,25 @@ export default async function LoginPage() {
       <div className="auth__panel">
         <div className="auth__card">
           <Link className="auth__brand" href="/login">
-            <IconLogo className="brand__mark" />
-            <span className="brand__name">Qrion</span>
+            <QrionLogo />
           </Link>
 
           <h1 className="auth__title">Masuk ke workspace Anda</h1>
           <p className="auth__sub">
-            Kelola keluhan pelanggan, pantau SLA, dan eskalasi tiket dalam satu
+            Kelola keluhan internal, pantau SLA, dan tangani tiket dalam satu
             tempat.
           </p>
 
           <LoginForm />
 
           <p className="auth__foot">
-            Belum punya akun? <Link href="/register">Daftar sebagai pelanggan</Link>
+            Belum punya akun? <Link href="/register">Daftar sebagai pegawai</Link>
           </p>
 
           <div className="demo-box">
-            <b>Akun admin</b> dibuat lewat SQL atau halaman{" "}
-            <b>Kelola Pengguna</b>. Pengguna biasa mendaftar sendiri lewat tautan
-            di atas.
+            <b>Masuk dengan email atau username.</b> Akun programmer dibuat
+            lewat halaman <b>Kelola Pengguna</b>; pegawai bisa mendaftar sendiri
+            lewat tautan di atas.
           </div>
         </div>
       </div>
@@ -45,19 +45,19 @@ export default async function LoginPage() {
           Setiap keluhan punya jalannya sendiri. Qrion memastikan tidak ada yang
           hilang di tengah.
         </p>
-        <p className="auth__by">Customer Complaint Operations</p>
+        <p className="auth__by">Internal Complaint Operations</p>
         <ul className="auth__points">
           <li>
             <IconCheck /> Triage otomatis &amp; target SLA per prioritas
           </li>
           <li>
-            <IconCheck /> Eskalasi berjenjang L1 → L2 → L3
+            <IconCheck /> Penugasan langsung ke programmer pilihan
           </li>
           <li>
-            <IconCheck /> Validasi pelanggan &amp; survei kepuasan
+            <IconCheck /> Validasi pegawai &amp; survei kepuasan
           </li>
           <li>
-            <IconCheck /> Arsip resolusi yang bisa dicari
+            <IconCheck /> Riwayat dan status tiket yang selalu terlihat
           </li>
         </ul>
       </aside>

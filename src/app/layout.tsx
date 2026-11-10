@@ -2,7 +2,6 @@ import type { Metadata, Viewport } from "next";
 import { Urbanist } from "next/font/google";
 import "./globals.css";
 import { HeaderProvider } from "@/components/header-context";
-import { ToastProvider } from "@/components/toast";
 
 export const viewport: Viewport = {
   themeColor: "#ffffff",
@@ -18,11 +17,11 @@ const urbanist = Urbanist({
 
 export const metadata: Metadata = {
   title: {
-    default: "Qrion — Customer Complaint CRM",
+    default: "Qrion — Internal Complaint CRM",
     template: "%s · Qrion",
   },
   description:
-    "Platform penanganan keluhan pelanggan: triage otomatis, SLA, eskalasi L1–L3, dan basis pengetahuan resolusi.",
+    "Platform penanganan keluhan internal: triage otomatis, SLA, dan penugasan ke programmer.",
 };
 
 export default function RootLayout({ children }: LayoutProps<"/">) {
@@ -40,9 +39,7 @@ export default function RootLayout({ children }: LayoutProps<"/">) {
           Lewati ke konten
         </a>
 
-        <HeaderProvider>
-          <ToastProvider>{children}</ToastProvider>
-        </HeaderProvider>
+        <HeaderProvider>{children}</HeaderProvider>
       </body>
     </html>
   );

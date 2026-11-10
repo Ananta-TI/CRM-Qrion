@@ -4,7 +4,7 @@ import { IconPlus, IconSearch } from "@/components/icons";
 import { Pager } from "@/components/pager";
 import { Empty, PageHead, SlaMeter, StatusPill, UrgencyPill } from "@/components/ui";
 import { requireCustomer } from "@/lib/auth/session";
-import { relativeTime } from "@/lib/domain/tickets";
+import { relativeTime, sanitizeSearchTerm } from "@/lib/domain/tickets";
 import { createClient } from "@/lib/supabase/server";
 import type { TicketStatus } from "@/lib/types/database";
 
@@ -28,7 +28,7 @@ export default async function CustomerTicketsPage({
 
   const filter = typeof params.status === "string" ? params.status : "all";
   const rawQuery = typeof params.q === "string" ? params.q.trim() : "";
-  const q = rawQuery.replace(/[%,()]/g, " ").trim();
+  const q = sanitizeSearchTerm(rawQuery);
   const page = Math.max(1, Number(params.page) || 1);
 
   const supabase = await createClient();
@@ -77,6 +77,7 @@ export default async function CustomerTicketsPage({
               className="tab"
               aria-current={filter === f.key ? "true" : undefined}
               href={filterHref(f.key)}
+              prefetch={false}
             >
               {f.label}
             </Link>
@@ -128,6 +129,7 @@ export default async function CustomerTicketsPage({
                   <Link
                     className="detail__title"
                     href={`/dashboard/tickets/${ticket.id}`}
+                    prefetch={false}
                     style={{ display: "block", marginTop: 8 }}
                   >
                     {ticket.subject}
@@ -135,7 +137,6 @@ export default async function CustomerTicketsPage({
                   <div className="detail__meta">
                     <span>{ticket.category}</span>
                     <span>Dibuat {relativeTime(ticket.created_at)}</span>
-                    <span>Level {ticket.escalation_level}</span>
                   </div>
                 </div>
 
@@ -145,6 +146,9 @@ export default async function CustomerTicketsPage({
                     deadline={ticket.sla_deadline}
                     status={ticket.status}
                     breached={ticket.sla_breached}
+                    paused={Boolean(ticket.sla_paused_at)}
+                    pausedAt={ticket.sla_paused_at}
+                    pausedMinutes={ticket.sla_paused_minutes}
                   />
                 </div>
               </div>
@@ -159,6 +163,7 @@ export default async function CustomerTicketsPage({
                     <Link
                       className="btn btn--primary btn--sm"
                       href={`/dashboard/tickets/${ticket.id}`}
+                      prefetch={false}
                     >
                       Validasi sekarang
                     </Link>

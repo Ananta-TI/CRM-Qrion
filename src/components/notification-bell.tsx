@@ -1,42 +1,72 @@
 "use client";
 
 import Link from "next/link";
-import { useCallback, useEffect, useRef, useState } from "react";
+import {
+  createContext,
+  useCallback,
+  useContext,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+} from "react";
 
-import { getNotifications, type NotificationItem } from "@/app/actions/notifications";
+import {
+  getNotifications,
+  markNotificationsSeen,
+  type NotificationItem,
+} from "@/app/actions/notifications";
 import { IconBell } from "@/components/icons";
 import { relativeTime } from "@/lib/domain/tickets";
-import { markStoredTimestamp, useStoredTimestamp } from "@/lib/use-stored-timestamp";
 
-const SEEN_KEY = "qrion_notif_seen_at";
-const SEEN_EVENT = "qrion-notif-seen";
+type NotificationContextValue = {
+  items: NotificationItem[];
+  seenAt: string | null;
+  loaded: boolean;
+  reload: () => void;
+  markSeen: () => void;
+};
+
+const NotificationContext = createContext<NotificationContextValue | null>(
+  null,
+);
 
 /**
- * The top-right bell. It reads real `ticket_events`, so escalations, replies
- * and status changes show up without a separate notification table.
+ * One feed for the whole shell. The shell mounts two bells (page header +
+ * mobile bar) and both stay in the DOM, so fetching from each component meant
+ * two identical server-action POSTs on every load. The provider owns the fetch
+ * and the read marker; the bells only render it.
  *
- * "Read" is a per-browser timestamp: anything newer than the last time the
- * panel was opened counts as unread. That is deliberately simple for the MVP —
- * the bell is a glanceable activity feed, not a per-user inbox.
+ * "Read" is stored on `profiles.notifications_seen_at`, not in localStorage, so
+ * opening the bell on one device clears the badge on every device.
  */
-export function NotificationBell({ staff }: { staff: boolean }) {
-  const [open, setOpen] = useState(false);
+export function NotificationProvider({
+  children,
+}: {
+  children: React.ReactNode;
+}) {
   const [items, setItems] = useState<NotificationItem[]>([]);
+  const [seenAt, setSeenAt] = useState<string | null>(null);
   const [loaded, setLoaded] = useState(false);
-  const seenAt = useStoredTimestamp(SEEN_KEY, SEEN_EVENT);
-  const rootRef = useRef<HTMLDivElement>(null);
 
   const load = useCallback(async () => {
     try {
-      const next = await getNotifications();
-      setItems(next);
+      const feed = await getNotifications();
+      setItems(feed.items);
+
+      // Keep the newest marker. Another tab may have marked read while this
+      // one was idle, but a stale response must never move the marker back.
+      setSeenAt((current) => {
+        const remote = feed.seenAt ? new Date(feed.seenAt).getTime() : 0;
+        const local = current ? new Date(current).getTime() : 0;
+        return remote >= local ? feed.seenAt : current;
+      });
     } finally {
       setLoaded(true);
     }
   }, []);
 
-  // Initial fetch. The "last seen" marker is read by useStoredTimestamp, so
-  // there is no setState-in-effect here.
+  // Initial fetch.
   useEffect(() => {
     void load();
   }, [load]);
@@ -53,6 +83,48 @@ export function NotificationBell({ staff }: { staff: boolean }) {
       window.clearInterval(timer);
     };
   }, [load]);
+
+  const markSeen = useCallback(() => {
+    const now = new Date().toISOString();
+    setSeenAt((current) => {
+      const local = current ? new Date(current).getTime() : 0;
+      return local > new Date(now).getTime() ? current : now;
+    });
+    void markNotificationsSeen();
+  }, []);
+
+  const reload = useCallback(() => {
+    void load();
+  }, [load]);
+
+  const value = useMemo(
+    () => ({ items, seenAt, loaded, reload, markSeen }),
+    [items, seenAt, loaded, reload, markSeen],
+  );
+
+  return (
+    <NotificationContext.Provider value={value}>
+      {children}
+    </NotificationContext.Provider>
+  );
+}
+
+function useNotifications() {
+  const ctx = useContext(NotificationContext);
+  if (!ctx) {
+    throw new Error("NotificationBell must be used inside <NotificationProvider>");
+  }
+  return ctx;
+}
+
+/**
+ * The top-right bell. It reads real `ticket_events`, so replies, assignment
+ * and status changes show up without a separate notification table.
+ */
+export function NotificationBell({ staff }: { staff: boolean }) {
+  const { items, seenAt, loaded, reload, markSeen } = useNotifications();
+  const [open, setOpen] = useState(false);
+  const rootRef = useRef<HTMLDivElement>(null);
 
   // Close on outside click / Escape.
   useEffect(() => {
@@ -78,8 +150,8 @@ export function NotificationBell({ staff }: { staff: boolean }) {
     setOpen(next);
 
     if (next) {
-      void load();
-      markStoredTimestamp(SEEN_KEY, SEEN_EVENT);
+      markSeen();
+      reload();
     }
   }
 
@@ -119,7 +191,7 @@ export function NotificationBell({ staff }: { staff: boolean }) {
             {!loaded && <p className="notif__empty">Memuat…</p>}
 
             {loaded && items.length === 0 && (
-              <p className="notif__empty">Belum ada aktivitas tiket.</p>
+              <p className="notif__empty">Belum ada aktivitas.</p>
             )}
 
             {items.map((item) => {
@@ -129,10 +201,13 @@ export function NotificationBell({ staff }: { staff: boolean }) {
                   className={`notif__item${fresh ? " notif__item--unread" : ""}`}
                   href={item.href}
                   key={item.id}
+                  prefetch={false}
                   onClick={() => setOpen(false)}
                 >
                   <span className="notif__item-top">
-                    <span className="code-ref">{item.ticketCode}</span>
+                    <span className="code-ref">
+                      {item.ticketCode ?? (item.kind === "account" ? "Akun" : "Tiket")}
+                    </span>
                     <span className="notif__time">{relativeTime(item.createdAt)}</span>
                   </span>
                   <span className="notif__message">{item.message}</span>
@@ -148,6 +223,7 @@ export function NotificationBell({ staff }: { staff: boolean }) {
             <Link
               className="link-btn"
               href={staff ? "/agent/board" : "/dashboard/tickets"}
+              prefetch={false}
               onClick={() => setOpen(false)}
             >
               Lihat semua tiket

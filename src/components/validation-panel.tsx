@@ -1,5 +1,6 @@
 "use client";
 
+import { useRouter } from "next/navigation";
 import { useState, useTransition } from "react";
 
 import { validateResolution } from "@/app/actions/workflow";
@@ -12,6 +13,7 @@ import { IconCheck, IconAlert } from "@/components/icons";
  * "Belum Selesai" reopens it and sends it straight back to the agent.
  */
 export function ValidationPanel({ ticketId }: { ticketId: string }) {
+  const router = useRouter();
   const [mode, setMode] = useState<"idle" | "reject">("idle");
   const [reason, setReason] = useState("");
   const [error, setError] = useState<string | null>(null);
@@ -30,8 +32,9 @@ export function ValidationPanel({ ticketId }: { ticketId: string }) {
         return;
       }
       if (satisfied) {
-        // Reload so the closed state and CSAT modal take over.
-        window.location.reload();
+        // Re-render the page so the closed state and CSAT modal take over.
+        // `refresh()` keeps the shell mounted; a full reload threw it away.
+        router.refresh();
       } else {
         setMode("idle");
         setReason("");
@@ -45,7 +48,7 @@ export function ValidationPanel({ ticketId }: { ticketId: string }) {
         Apakah masalah Anda sudah selesai?
       </p>
       <p className="validate__sub">
-        Agen sudah mengirim solusi. Konfirmasi agar kami dapat menutup tiket, atau
+        Programmer sudah mengirim solusi. Konfirmasi agar kami dapat menutup tiket, atau
         kembalikan bila belum tuntas.
       </p>
 

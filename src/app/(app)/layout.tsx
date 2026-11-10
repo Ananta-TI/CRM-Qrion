@@ -2,9 +2,8 @@ import { redirect } from "next/navigation";
 
 import { AppShell } from "@/components/app-shell";
 import { buildNav, EMPTY_COUNTS, type NavCounts } from "@/lib/auth/nav";
-import { getSession, isStaff } from "@/lib/auth/session";
+import { getSession, isStaff, type Session } from "@/lib/auth/session";
 import { createClient } from "@/lib/supabase/server";
-import type { UserRole } from "@/lib/types/database";
 
 /**
  * The signed-in frame: sidebar + persistent header live here, so they stay
@@ -20,12 +19,15 @@ export default async function AppLayout({
 }: {
   children: React.ReactNode;
 }) {
-  const session = await getSession();
+  // Both calls start immediately: the badge RPC is keyed on auth.uid(), so it
+  // does not need the role first. Only the legacy fallback (0005 missing) has
+  // to wait for the session to decide which count query to run.
+  const sessionPromise = getSession();
+  const countsPromise = navCounts(sessionPromise);
+  const session = await sessionPromise;
   if (!session) redirect("/login");
 
-  // Badges come from one RPC keyed on auth.uid(), so it does not need the role
-  // first — it can run alongside the profile fetch instead of after it.
-  const counts = await navCounts(session.profile.role);
+  const counts = await countsPromise;
   const nav = buildNav(session.profile.role, counts);
 
   return (
@@ -40,14 +42,18 @@ export default async function AppLayout({
  * to a plain count query when migration 0005 has not been applied yet, and
  * degrades to no badge on any error — a badge must never break the page.
  */
-async function navCounts(role: UserRole): Promise<NavCounts> {
+async function navCounts(
+  sessionPromise: Promise<Session | null>,
+): Promise<NavCounts> {
   const supabase = await createClient();
 
   try {
     const { data, error } = await supabase.rpc("get_nav_counts");
 
     if (error?.code === "PGRST202") {
-      return navCountsFallback(supabase, role);
+      const session = await sessionPromise;
+      if (!session) return EMPTY_COUNTS;
+      return navCountsFallback(supabase, session);
     }
     if (error || !data) return EMPTY_COUNTS;
 
@@ -66,26 +72,22 @@ async function navCounts(role: UserRole): Promise<NavCounts> {
 /** The pre-0005 path: a `tickets` count query for the relevant badge. */
 async function navCountsFallback(
   supabase: Awaited<ReturnType<typeof createClient>>,
-  role: UserRole,
+  session: Session,
 ): Promise<NavCounts> {
   try {
-    if (isStaff(role)) {
+    if (isStaff(session.profile.role)) {
       const { count } = await supabase
         .from("tickets")
         .select("id", { count: "exact", head: true })
-        .eq("status", "Open");
+        .eq("status", "Open")
+        .or(`assignee_id.is.null,assignee_id.eq.${session.userId}`);
       return { ...EMPTY_COUNTS, staffOpen: count ?? 0 };
     }
-
-    const {
-      data: { user },
-    } = await supabase.auth.getUser();
-    if (!user) return EMPTY_COUNTS;
 
     const { count } = await supabase
       .from("tickets")
       .select("id", { count: "exact", head: true })
-      .eq("customer_id", user.id)
+      .eq("customer_id", session.userId)
       .in("status", ["Open", "In Progress"]);
     return { ...EMPTY_COUNTS, customerActive: count ?? 0 };
   } catch {

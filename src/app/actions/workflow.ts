@@ -3,19 +3,16 @@
 import { revalidatePath } from "next/cache";
 import { z } from "zod";
 
-import { isStaff, requireSession } from "@/lib/auth/session";
+import { attachmentsSchema } from "@/lib/attachment-schema";
+import { isStaff, requireSession, type Session } from "@/lib/auth/session";
 import { createClient } from "@/lib/supabase/server";
 import {
-  ESCALATION_LEVELS,
+  REOPEN_WINDOW_DAYS,
   STATUSES,
-  nextLevel,
-  slaTarget,
+  TICKET_CATEGORIES,
+  canCustomerReopen,
 } from "@/lib/domain/tickets";
-import type {
-  EscalationLevel,
-  TicketStatus,
-  UrgencyLevel,
-} from "@/lib/types/database";
+import type { TicketCategory, TicketStatus } from "@/lib/types/database";
 import type { ActionResult } from "./tickets";
 
 /** Revalidate every surface that renders a given ticket. */
@@ -26,16 +23,30 @@ function revalidateTicket(id: string) {
   revalidatePath("/agent");
   revalidatePath("/agent/board");
   revalidatePath(`/agent/tickets/${id}`);
-  revalidatePath("/knowledge");
 }
 
-async function loadTicket(id: string) {
+async function loadTicket(id: string, session: Session) {
   const supabase = await createClient();
   const { data, error } = await supabase
     .from("tickets")
     .select("*")
     .eq("id", id)
     .single();
+
+  // RLS is the real gate. Repeat the rule in application code so a missing or
+  // regressed policy cannot let a server action act on another programmer's
+  // ticket.
+  if (data) {
+    const owns = data.customer_id === session.userId;
+    const staffCanHandle =
+      isStaff(session.profile.role) &&
+      (data.assignee_id === null || data.assignee_id === session.userId);
+
+    if (!owns && !staffCanHandle) {
+      return { supabase, ticket: null, error: new Error("forbidden") };
+    }
+  }
+
   return { supabase, ticket: data, error };
 }
 
@@ -64,32 +75,59 @@ async function logEvent(input: {
 export async function claimTicket(ticketId: string): Promise<ActionResult> {
   const session = await requireSession();
   if (!isStaff(session.profile.role)) {
-    return { ok: false, error: "Hanya agen yang dapat mengambil tiket." };
+    return { ok: false, error: "Hanya programmer yang dapat mengambil tiket." };
   }
 
-  const { supabase, ticket, error } = await loadTicket(ticketId);
+  const { supabase, ticket, error } = await loadTicket(ticketId, session);
   if (error || !ticket) return { ok: false, error: "Tiket tidak ditemukan." };
   if (ticket.status === "Closed") {
     return { ok: false, error: "Tiket sudah ditutup." };
   }
 
-  const { error: updateError } = await supabase
+  // The `assignee_id is null` predicate is the lock. Two agents can press the
+  // button at the same instant; Postgres serialises the row updates and exactly
+  // one of them matches the predicate. The loser gets 0 rows back.
+  const { data: claimed, error: updateError } = await supabase
     .from("tickets")
     .update({
-      assignee_id: ticket.assignee_id ?? session.userId,
+      assignee_id: session.userId,
       status: ticket.status === "Open" ? "In Progress" : ticket.status,
       first_response_at: ticket.first_response_at ?? new Date().toISOString(),
     })
-    .eq("id", ticketId);
+    .eq("id", ticketId)
+    .is("assignee_id", null)
+    .neq("status", "Closed")
+    .select("id");
 
   if (updateError) return { ok: false, error: updateError.message };
+
+  if (!claimed || claimed.length === 0) {
+    // Re-read so the message reflects what actually happened, not the stale
+    // row the page loaded a moment ago.
+    const { data: current } = await supabase
+      .from("tickets")
+      .select("assignee_id, status")
+      .eq("id", ticketId)
+      .single();
+
+    if (current?.assignee_id === session.userId) {
+      return { ok: true, data: undefined };
+    }
+    if (current?.status === "Closed") {
+      return { ok: false, error: "Tiket sudah ditutup." };
+    }
+    return {
+      ok: false,
+      error: "Tiket sudah diambil oleh programmer lain. Silakan pilih tiket lain.",
+    };
+  }
 
   await logEvent({
     ticketId,
     actorId: session.userId,
     eventType: "assigned",
     to: session.profile.full_name,
-    note: ticket.status === "Open" ? "Tiket diambil alih" : "Agen ditambahkan",
+    note: "Tiket diambil alih",
   });
 
   revalidateTicket(ticketId);
@@ -97,101 +135,65 @@ export async function claimTicket(ticketId: string): Promise<ActionResult> {
 }
 
 // =============================================================================
-// 2. ESCALATION ROUTING  (L1 -> L2 -> L3)
-//    Handing a ticket to technical or management shortens the SLA window, so
-//    the deadline is recomputed from the original creation time.
+// 2. MANUAL TRIAGE CORRECTION
+//    The keyword heuristic is a starting point, not a verdict. A programmer can
+//    fix the category/priority in place.
 // =============================================================================
-const escalateSchema = z.object({
+const classificationSchema = z.object({
   ticketId: z.string().uuid(),
-  targetLevel: z.enum(ESCALATION_LEVELS as [string, ...string[]]),
-  reason: z.string().trim().min(5, "Alasan eskalasi minimal 5 karakter.").max(500),
-  urgency: z.enum(["Low", "Medium", "High", "Critical"]).optional(),
+  category: z.enum(TICKET_CATEGORIES as [TicketCategory, ...TicketCategory[]]),
+  urgency: z.enum(["Low", "Medium", "High", "Critical"]),
 });
 
-export async function escalateTicket(
-  input: z.input<typeof escalateSchema>,
+export async function updateTicketClassification(
+  input: z.input<typeof classificationSchema>,
 ): Promise<ActionResult> {
   const session = await requireSession();
   if (!isStaff(session.profile.role)) {
-    return { ok: false, error: "Hanya agen yang dapat melakukan eskalasi." };
+    return { ok: false, error: "Hanya programmer yang dapat mengoreksi klasifikasi." };
   }
 
-  const parsed = escalateSchema.safeParse(input);
+  const parsed = classificationSchema.safeParse(input);
   if (!parsed.success) {
     return { ok: false, error: parsed.error.issues[0]?.message ?? "Input tidak valid." };
   }
 
-  const { ticketId, targetLevel, reason, urgency } = parsed.data;
-  const { supabase, ticket, error } = await loadTicket(ticketId);
+  const { ticketId, category, urgency } = parsed.data;
+  const { supabase, ticket, error } = await loadTicket(ticketId, session);
   if (error || !ticket) return { ok: false, error: "Tiket tidak ditemukan." };
   if (ticket.status === "Closed") {
-    return { ok: false, error: "Tiket yang sudah ditutup tidak bisa dieskalasi." };
+    return { ok: false, error: "Tiket yang sudah ditutup tidak bisa diubah klasifikasinya." };
+  }
+  if (ticket.category === category && ticket.urgency === urgency) {
+    return { ok: true, data: undefined };
   }
 
-  const level = targetLevel as EscalationLevel;
-  if (level === ticket.escalation_level) {
-    return { ok: false, error: `Tiket sudah berada di level ${level}.` };
-  }
-  if (ESCALATION_LEVELS.indexOf(level) < ESCALATION_LEVELS.indexOf(ticket.escalation_level)) {
-    return { ok: false, error: "Eskalasi hanya dapat naik, tidak turun." };
-  }
-
-  // Escalating to L3 implies management urgency at minimum.
-  const nextUrgency: UrgencyLevel =
-    (urgency as UrgencyLevel | undefined) ??
-    (level === "L3" && ticket.urgency === "Medium" ? "High" : ticket.urgency);
-
-  const target = slaTarget(nextUrgency, level);
-  const createdAt = new Date(ticket.created_at).getTime();
-  const deadline = new Date(createdAt + target.resolve * 60_000).toISOString();
+  const urgencyChanged = ticket.urgency !== urgency;
 
   const { error: updateError } = await supabase
     .from("tickets")
     .update({
-      escalation_level: level,
-      urgency: nextUrgency,
-      sla_policy_minutes: target.resolve,
-      sla_deadline: deadline,
-      status: ticket.status === "Open" ? "In Progress" : ticket.status,
-      assignee_id: ticket.assignee_id ?? session.userId,
+      category,
+      urgency,
+      // The trigger recomputes the deadline from the new priority. A corrected
+      // priority should not keep a breach that belonged to the wrong target.
+      ...(urgencyChanged ? { sla_breached: false } : {}),
     })
     .eq("id", ticketId);
 
   if (updateError) return { ok: false, error: updateError.message };
 
-  await supabase.from("messages").insert({
-    ticket_id: ticketId,
-    author_id: session.userId,
-    author_role: "system",
-    kind: "system",
-    body: `Tiket dieskalasi dari ${ticket.escalation_level} ke ${level}. Alasan: ${reason}. Target SLA baru: ${target.resolve / 60} jam.`,
-  });
-
   await logEvent({
     ticketId,
     actorId: session.userId,
-    eventType: "escalated",
-    from: ticket.escalation_level,
-    to: level,
-    note: reason,
+    eventType: "triage_corrected",
+    from: `${ticket.category} · ${ticket.urgency}`,
+    to: `${category} · ${urgency}`,
+    note: "Koreksi klasifikasi manual oleh programmer",
   });
 
   revalidateTicket(ticketId);
   return { ok: true, data: undefined };
-}
-
-/** Convenience wrapper for the "naik satu tingkat" button. */
-export async function escalateToNextLevel(
-  ticketId: string,
-  reason: string,
-): Promise<ActionResult> {
-  const { ticket } = await loadTicket(ticketId);
-  if (!ticket) return { ok: false, error: "Tiket tidak ditemukan." };
-  const target = nextLevel(ticket.escalation_level);
-  if (!target) {
-    return { ok: false, error: "Tiket sudah berada di level tertinggi (L3)." };
-  }
-  return escalateTicket({ ticketId, targetLevel: target, reason });
 }
 
 // =============================================================================
@@ -213,7 +215,7 @@ export async function updateTicketStatus(
   }
 
   const { ticketId, status, note } = parsed.data;
-  const { supabase, ticket, error } = await loadTicket(ticketId);
+  const { supabase, ticket, error } = await loadTicket(ticketId, session);
   if (error || !ticket) return { ok: false, error: "Tiket tidak ditemukan." };
 
   const actorIsStaff = isStaff(session.profile.role);
@@ -227,9 +229,25 @@ export async function updateTicketStatus(
     return { ok: true, data: undefined };
   }
 
-  // Customers may only reopen a ticket that is waiting on them.
-  if (!actorIsStaff && target !== "In Progress") {
-    return { ok: false, error: "Pelanggan hanya dapat membuka kembali tiket." };
+  // Customers may only reopen a Closed ticket, and only inside the window.
+  // After that they must file a new complaint so the old SLA/history stays
+  // intact.
+  if (!actorIsStaff) {
+    if (target !== "In Progress") {
+      return { ok: false, error: "Hanya pegawai pemilik tiket yang dapat membuka kembali." };
+    }
+    if (ticket.status !== "Closed") {
+      return {
+        ok: false,
+        error: "Hanya tiket yang sudah ditutup yang dapat dibuka kembali.",
+      };
+    }
+    if (!canCustomerReopen(ticket.closed_at)) {
+      return {
+        ok: false,
+        error: `Batas waktu membuka kembali tiket adalah ${REOPEN_WINDOW_DAYS} hari setelah ditutup. Silakan buat tiket baru.`,
+      };
+    }
   }
 
   const { error: updateError } = await supabase
@@ -260,7 +278,7 @@ export async function updateTicketStatus(
     note:
       note ??
       (!actorIsStaff && target === "In Progress"
-        ? "Dibuka kembali oleh pelanggan"
+        ? "Dibuka kembali oleh pegawai"
         : null),
   });
 
@@ -282,7 +300,7 @@ export async function proposeSolution(
 ): Promise<ActionResult> {
   const session = await requireSession();
   if (!isStaff(session.profile.role)) {
-    return { ok: false, error: "Hanya agen yang dapat mengirim solusi." };
+    return { ok: false, error: "Hanya programmer yang dapat mengirim solusi." };
   }
 
   const parsed = solutionSchema.safeParse(input);
@@ -291,7 +309,7 @@ export async function proposeSolution(
   }
 
   const { ticketId, body, resolutionSummary } = parsed.data;
-  const { supabase, ticket, error } = await loadTicket(ticketId);
+  const { supabase, ticket, error } = await loadTicket(ticketId, session);
   if (error || !ticket) return { ok: false, error: "Tiket tidak ditemukan." };
   if (ticket.status === "Closed") {
     return { ok: false, error: "Tiket sudah ditutup." };
@@ -321,23 +339,13 @@ export async function proposeSolution(
 
   if (updateError) return { ok: false, error: updateError.message };
 
-  // Auto-archive: the resolution summary is written in the update above, so
-  // the Knowledge Base already has the article. The event keeps the audit
-  // trail honest without asking the agent to fill a second form.
-  await logEvent({
-    ticketId,
-    actorId: session.userId,
-    eventType: "knowledge_published",
-    note: resolutionSummary ?? body.slice(0, 480),
-  });
-
   await logEvent({
     ticketId,
     actorId: session.userId,
     eventType: "status_changed",
     from: ticket.status,
     to: "Waiting Validation",
-    note: "Solusi dikirim ke pelanggan",
+    note: "Solusi dikirim ke pegawai",
   });
 
   revalidateTicket(ticketId);
@@ -365,7 +373,7 @@ export async function validateResolution(
   }
 
   const { ticketId, satisfied, reason } = parsed.data;
-  const { supabase, ticket, error } = await loadTicket(ticketId);
+  const { supabase, ticket, error } = await loadTicket(ticketId, session);
   if (error || !ticket) return { ok: false, error: "Tiket tidak ditemukan." };
 
   const actorIsOwner = ticket.customer_id === session.userId;
@@ -396,7 +404,7 @@ export async function validateResolution(
       eventType: "status_changed",
       from: "Waiting Validation",
       to: "Closed",
-      note: "Divalidasi selesai oleh pelanggan",
+      note: "Divalidasi selesai oleh pegawai",
     });
   } else {
     // Reopen: bounce straight back to the agent, count it, and clear the
@@ -427,7 +435,7 @@ export async function validateResolution(
       eventType: "status_changed",
       from: "Waiting Validation",
       to: "In Progress",
-      note: reason ?? "Dibuka kembali oleh pelanggan",
+      note: reason ?? "Dibuka kembali oleh pegawai",
     });
   }
 
@@ -454,7 +462,7 @@ export async function submitCsat(
   }
 
   const { ticketId, score, comment } = parsed.data;
-  const { supabase, ticket, error } = await loadTicket(ticketId);
+  const { supabase, ticket, error } = await loadTicket(ticketId, session);
   if (error || !ticket) return { ok: false, error: "Tiket tidak ditemukan." };
   if (ticket.customer_id !== session.userId) {
     return { ok: false, error: "Hanya pemilik tiket yang dapat mengisi survei." };
@@ -483,7 +491,6 @@ export async function submitCsat(
   });
 
   revalidateTicket(ticketId);
-  revalidatePath("/knowledge");
   return { ok: true, data: undefined };
 }
 
@@ -494,6 +501,7 @@ const messageSchema = z.object({
   ticketId: z.string().uuid(),
   body: z.string().trim().min(1, "Pesan tidak boleh kosong.").max(5000),
   kind: z.enum(["text", "note"]).optional(),
+  attachments: attachmentsSchema.optional(),
 });
 
 export async function sendMessage(
@@ -505,8 +513,8 @@ export async function sendMessage(
     return { ok: false, error: parsed.error.issues[0]?.message ?? "Pesan tidak valid." };
   }
 
-  const { ticketId, body, kind } = parsed.data;
-  const { supabase, ticket, error } = await loadTicket(ticketId);
+  const { ticketId, body, kind, attachments } = parsed.data;
+  const { supabase, ticket, error } = await loadTicket(ticketId, session);
   if (error || !ticket) return { ok: false, error: "Tiket tidak ditemukan." };
 
   const actorIsOwner = ticket.customer_id === session.userId;
@@ -518,24 +526,10 @@ export async function sendMessage(
     return { ok: false, error: "Tiket sudah ditutup. Buka kembali untuk membalas." };
   }
 
-  // The customer side of the chat stays locked until a real agent reply lands.
-  // System messages and internal notes deliberately do not unlock it; otherwise
-  // an auto-generated notice would look like a conversation opener.
-  if (!actorIsStaff) {
-    const { count, error: countError } = await supabase
-      .from("messages")
-      .select("id", { count: "exact", head: true })
-      .eq("ticket_id", ticketId)
-      .eq("author_role", "agent")
-      .neq("kind", "note");
-
-    if (countError) return { ok: false, error: countError.message };
-    if (!count) {
-      return {
-        ok: false,
-        error: "Percakapan akan aktif setelah agen mengirim pesan pertama.",
-      };
-    }
+  // A message may only reference files inside its own ticket folder.
+  const attachmentList = attachments ?? [];
+  if (attachmentList.some((a) => !a.path.startsWith(`${ticketId}/`))) {
+    return { ok: false, error: "Lampiran tidak valid untuk tiket ini." };
   }
 
   // Internal notes are for staff eyes only.
@@ -547,6 +541,7 @@ export async function sendMessage(
     author_role: actorIsStaff ? "agent" : "customer",
     kind: messageKind,
     body,
+    attachments: attachmentList,
   });
   if (insertError) return { ok: false, error: insertError.message };
 
@@ -584,7 +579,7 @@ export async function sendMessage(
           eventType: "status_changed",
           from: "Open",
           to: "In Progress",
-          note: "Agen membalas tiket",
+          note: "Programmer membalas tiket",
         });
       }
     }
@@ -594,54 +589,3 @@ export async function sendMessage(
   return { ok: true, data: undefined };
 }
 
-// =============================================================================
-// 8. KNOWLEDGE BASE — archive a resolution so it is searchable later
-// =============================================================================
-const knowledgeSchema = z.object({
-  ticketId: z.string().uuid(),
-  resolutionSummary: z
-    .string()
-    .trim()
-    .min(10, "Ringkasan resolusi minimal 10 karakter.")
-    .max(1000),
-  tags: z.array(z.string().trim().max(24)).max(8).optional(),
-});
-
-export async function publishToKnowledgeBase(
-  input: z.input<typeof knowledgeSchema>,
-): Promise<ActionResult> {
-  const session = await requireSession();
-  if (!isStaff(session.profile.role)) {
-    return { ok: false, error: "Hanya agen yang dapat mengarsipkan resolusi." };
-  }
-
-  const parsed = knowledgeSchema.safeParse(input);
-  if (!parsed.success) {
-    return { ok: false, error: parsed.error.issues[0]?.message ?? "Input tidak valid." };
-  }
-
-  const { ticketId, resolutionSummary, tags } = parsed.data;
-  const { supabase, ticket, error } = await loadTicket(ticketId);
-  if (error || !ticket) return { ok: false, error: "Tiket tidak ditemukan." };
-
-  const { error: updateError } = await supabase
-    .from("tickets")
-    .update({
-      resolution_summary: resolutionSummary,
-      tags: tags?.length ? tags : ticket.tags,
-    })
-    .eq("id", ticketId);
-
-  if (updateError) return { ok: false, error: updateError.message };
-
-  await logEvent({
-    ticketId,
-    actorId: session.userId,
-    eventType: "knowledge_published",
-    note: resolutionSummary,
-  });
-
-  revalidateTicket(ticketId);
-  revalidatePath("/knowledge");
-  return { ok: true, data: undefined };
-}

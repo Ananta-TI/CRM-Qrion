@@ -1,22 +1,49 @@
 import { PageHead, StatCard } from "@/components/ui";
 import { requireStaff } from "@/lib/auth/session";
-import { formatDuration } from "@/lib/domain/tickets";
+import { URGENCY_RANK, formatDuration } from "@/lib/domain/tickets";
 import { createClient } from "@/lib/supabase/server";
-import { URGENCY_RANK } from "@/lib/domain/tickets";
-import type { UrgencyLevel } from "@/lib/types/database";
+import type { TicketStatus, UrgencyLevel } from "@/lib/types/database";
 
 export const metadata = { title: "Analitik" };
 
+type AnalyticsTicket = {
+  status: TicketStatus;
+  urgency: UrgencyLevel;
+  csat_score: number | null;
+  reopen_count: number;
+  created_at: string;
+  closed_at: string | null;
+  sla_breached: boolean;
+  sla_paused_minutes: number;
+};
+
 export default async function AnalyticsPage() {
   // Back-office only: the layout checks for a session, this checks the role.
-  await requireStaff();
+  const session = await requireStaff();
   const supabase = await createClient();
 
-  const { data: rows } = await supabase.from("ticket_knowledge").select("*");
-  const all = rows ?? [];
+  // The Knowledge Base view is gone; read the tickets this programmer may see
+  // (assigned to them plus the shared queue) and derive the same aggregates.
+  const { data: rows } = await supabase
+    .from("tickets")
+    .select(
+      "status, urgency, csat_score, reopen_count, created_at, closed_at, sla_breached, sla_paused_minutes",
+    )
+    .or(`assignee_id.is.null,assignee_id.eq.${session.userId}`);
 
-  const closed = all.filter((r) => r.status === "Closed");
+  const all = (rows ?? []) as AnalyticsTicket[];
+
   const open = all.filter((r) => r.status !== "Closed");
+  const closed = all
+    .filter((r) => r.status === "Closed")
+    .map((r) => ({
+      ...r,
+      hours_to_close: r.closed_at
+        ? (new Date(r.closed_at).getTime() - new Date(r.created_at).getTime()) /
+            3_600_000 -
+          (r.sla_paused_minutes ?? 0) / 60
+        : null,
+    }));
 
   // --- headline numbers -------------------------------------------------
   const withHours = closed.filter((r) => r.hours_to_close !== null);
@@ -71,17 +98,11 @@ export default async function AnalyticsPage() {
   }
   const maxDay = Math.max(...days.map((d) => Math.max(d.created, d.closed)), 1);
 
-  // --- escalation mix ----------------------------------------------------
-  const escalationCounts = (["L1", "L2", "L3"] as const).map((l) => ({
-    level: l,
-    total: all.filter((r) => r.escalation_level === l).length,
-  }));
-
   return (
     <>
       <PageHead
         title="Analitik"
-        sub="Bagaimana tim menangani keluhan, dan di mana waktu terbuang."
+        sub="Bagaimana tiket yang Anda tangani dan antrian bersama bergerak."
       />
 
       <div className="grid">
@@ -167,7 +188,7 @@ export default async function AnalyticsPage() {
           </div>
         </section>
 
-        <div className="side">
+        <aside className="side">
           <section className="card">
             <h2 className="card__title">Distribusi prioritas</h2>
             <ul className="stack--sm mt-2">
@@ -195,22 +216,7 @@ export default async function AnalyticsPage() {
               ))}
             </ul>
           </section>
-
-          <section className="card">
-            <h2 className="card__title">Sebaran level</h2>
-            <dl className="dl mt-2">
-              {escalationCounts.map((e) => (
-                <div key={e.level}>
-                  <dt>{e.level}</dt>
-                  <dd>{e.total} tiket</dd>
-                </div>
-              ))}
-            </dl>
-            <p className="copy mt-2">
-              Eskalasi tinggi menandakan frontline perlu panduan tambahan.
-            </p>
-          </section>
-        </div>
+        </aside>
       </div>
     </>
   );

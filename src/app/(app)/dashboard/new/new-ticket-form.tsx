@@ -8,36 +8,52 @@ import { AttachmentDrop, type PendingFile } from "@/components/attachment-drop";
 import { IconAlert, IconSend } from "@/components/icons";
 import {
   SLA_POLICY,
+  TICKET_CATEGORIES,
   URGENCY_STYLE,
   formatDuration,
   triageCategory,
   triageUrgency,
 } from "@/lib/domain/tickets";
 import { createClient } from "@/lib/supabase/client";
-import { ATTACHMENT_BUCKET, buildObjectPath } from "@/lib/storage";
-import type { Attachment } from "@/lib/types/database";
+import { uploadAttachments } from "@/lib/upload-attachments";
+import type { Programmer, TicketCategory } from "@/lib/types/database";
 
 /**
  * Filing a complaint should feel like writing an email: a subject, a body,
- * and whatever you want to attach. Category and priority are the system's
- * call, so the user never sees a dropdown for them.
+ * and whatever you want to attach.
+ *
+ * Priority and SLA are the system's call. The employee may either pick a
+ * category or let the keyword heuristic guess it, and may choose who should
+ * handle the ticket: a specific programmer, or the shared "All" queue.
  */
-export function NewTicketForm({ customerName }: { customerName: string }) {
+export function NewTicketForm({
+  customerName,
+  programmers,
+}: {
+  customerName: string;
+  programmers: Programmer[];
+}) {
   const router = useRouter();
   const [pending, startTransition] = useTransition();
 
   const [subject, setSubject] = useState("");
   const [description, setDescription] = useState("");
+  const [categoryChoice, setCategoryChoice] = useState("auto");
+  const [target, setTarget] = useState("all");
   const [files, setFiles] = useState<PendingFile[]>([]);
   const [error, setError] = useState<string | null>(null);
   const [fieldErrors, setFieldErrors] = useState<Record<string, string>>({});
 
-  // Live preview of what the system will decide, so the user is never
-  // surprised by the priority they get.
-  const category = useMemo(
+  // The employee can pick a category, or let the keyword heuristic guess it.
+  // Priority always stays the system's call.
+  const detectedCategory = useMemo(
     () => triageCategory({ subject, description }),
     [subject, description],
   );
+  const category: TicketCategory =
+    categoryChoice === "auto"
+      ? detectedCategory
+      : (categoryChoice as TicketCategory);
   const urgency = useMemo(
     () => triageUrgency({ subject, description, category }),
     [subject, description, category],
@@ -45,35 +61,10 @@ export function NewTicketForm({ customerName }: { customerName: string }) {
   const style = URGENCY_STYLE[urgency];
   const sla = SLA_POLICY.L1[urgency];
 
-  async function uploadFiles(ticketId: string): Promise<Attachment[]> {
-    if (files.length === 0) return [];
-
-    const supabase = createClient();
-    const uploaded: Attachment[] = [];
-
-    for (const item of files) {
-      const path = buildObjectPath(ticketId, item.file);
-      const { error: upErr } = await supabase.storage
-        .from(ATTACHMENT_BUCKET)
-        .upload(path, item.file, {
-          contentType: item.file.type,
-          upsert: false,
-        });
-
-      if (upErr) {
-        // A failed attachment should not lose the complaint itself.
-        throw new Error(`Gagal mengunggah "${item.file.name}": ${upErr.message}`);
-      }
-
-      uploaded.push({
-        path,
-        name: item.file.name,
-        mime: item.file.type,
-        size: item.file.size,
-      });
-    }
-
-    return uploaded;
+  async function uploadFiles(ticketId: string) {
+    // A failed attachment should not lose the complaint itself; the catch in
+    // submit() still routes the created ticket to its detail page.
+    return uploadAttachments(ticketId, files);
   }
 
   function submit() {
@@ -86,6 +77,8 @@ export function NewTicketForm({ customerName }: { customerName: string }) {
       const result = await createTicket({
         subject,
         description,
+        category: categoryChoice === "auto" ? undefined : category,
+        assigneeId: target === "all" ? null : target,
         attachments: [],
       });
 
@@ -167,6 +160,46 @@ export function NewTicketForm({ customerName }: { customerName: string }) {
             <em className="field__err">{fieldErrors.description}</em>
           </label>
 
+          <label className="field">
+            <span>Kategori masalah</span>
+            <select
+              value={categoryChoice}
+              onChange={(e) => setCategoryChoice(e.target.value)}
+            >
+              <option value="auto">Deteksi otomatis dari tulisan saya</option>
+              {TICKET_CATEGORIES.map((item) => (
+                <option key={item} value={item}>
+                  {item}
+                </option>
+              ))}
+            </select>
+            <span className="copy" style={{ fontSize: 12 }}>
+              Pilih kategori yang paling dekat. Prioritas dan target SLA tetap
+              dinilai sistem.
+            </span>
+            <em className="field__err">{fieldErrors.category}</em>
+          </label>
+
+          <label className="field">
+            <span>Tujuan penanganan</span>
+            <select value={target} onChange={(e) => setTarget(e.target.value)}>
+              <option value="all">Semua programmer</option>
+              {programmers.map((p) => (
+                <option key={p.id} value={p.id}>
+                  {p.full_name}
+                </option>
+              ))}
+            </select>
+            <span className="copy" style={{ fontSize: 12 }}>
+              {programmers.length === 0
+                ? "Belum ada programmer aktif. Tiket akan masuk ke antrian bersama."
+                : target === "all"
+                  ? "Tiket terlihat oleh semua programmer dan bisa diambil salah satu."
+                  : "Tiket hanya terlihat oleh programmer yang dipilih."}
+            </span>
+            <em className="field__err">{fieldErrors.assigneeId}</em>
+          </label>
+
           <div>
             <p className="card__label">Lampiran</p>
             <AttachmentDrop
@@ -191,24 +224,25 @@ export function NewTicketForm({ customerName }: { customerName: string }) {
         <section className="card">
           <h2 className="card__title">Sistem yang menilai</h2>
           <p className="copy mt-1">
-            Anda tidak perlu memilih kategori atau prioritas. Sistem membacanya
-            dari isi keluhan, lalu menetapkan target SLA.
+            Kategori bisa Anda pilih sendiri atau dibiarkan dideteksi dari isi
+            keluhan. Prioritas dan target SLA tetap ditetapkan sistem.
           </p>
 
           <dl className="dl mt-2">
             <div>
-              <dt>Kategori terdeteksi</dt>
-              <dd>{description.length + subject.length >= 3 ? category : "—"}</dd>
+              <dt>Kategori</dt>
+              <dd>
+                {description.length + subject.length >= 3 ? category : "—"}
+                {categoryChoice === "auto" && description.length + subject.length >= 3
+                  ? " (otomatis)"
+                  : ""}
+              </dd>
             </div>
             <div>
               <dt>Prioritas</dt>
               <dd>
                 <span className={`pill ${style.pill}`}>{style.label}</span>
               </dd>
-            </div>
-            <div>
-              <dt>Level awal</dt>
-              <dd>L1 · Frontline</dd>
             </div>
             <div>
               <dt>Target respons</dt>
@@ -243,7 +277,7 @@ export function NewTicketForm({ customerName }: { customerName: string }) {
             <li className="tl-item">
               <span className="tl-item__dot" />
               <div className="tl-item__body">
-                <p className="tl-item__title">Tim menangani</p>
+                <p className="tl-item__title">Programmer menangani</p>
                 <p className="tl-item__note">
                   Anda bisa memantau percakapan dan menambah info.
                 </p>

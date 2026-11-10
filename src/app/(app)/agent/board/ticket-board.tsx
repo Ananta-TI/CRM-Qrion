@@ -6,7 +6,7 @@ import { useState, useTransition } from "react";
 
 import { claimTicket } from "@/app/actions/workflow";
 import { IconChat, IconFlag } from "@/components/icons";
-import { LevelPill, SlaMeter, StatusPill, UrgencyPill } from "@/components/ui";
+import { SlaMeter, StatusPill, UrgencyPill } from "@/components/ui";
 import { SLA_POLICY, relativeTime } from "@/lib/domain/tickets";
 import type { Ticket } from "@/lib/types/database";
 
@@ -16,20 +16,28 @@ export type BoardTicket = Ticket & {
 };
 
 /**
- * The agent queue as a plain list: searchable, paginated, and readable on a
- * phone. Replaces the old drag-and-drop Kanban board, which looked good but
- * did not actually move tickets between columns.
+ * The programmer queue as a plain list: searchable, paginated, and readable on
+ * a phone. Assigned tickets belong to one programmer; unassigned tickets are
+ * the shared "All" queue and can be claimed.
  */
 export function TicketBoard({ tickets }: { tickets: BoardTicket[] }) {
   const router = useRouter();
   const [pendingId, setPendingId] = useState<string | null>(null);
+  const [claimError, setClaimError] = useState<{
+    id: string;
+    message: string;
+  } | null>(null);
   const [, startTransition] = useTransition();
 
   function claim(id: string) {
     setPendingId(id);
+    setClaimError(null);
     startTransition(async () => {
-      await claimTicket(id);
+      const result = await claimTicket(id);
       setPendingId(null);
+      if (!result.ok) {
+        setClaimError({ id, message: result.error });
+      }
       router.refresh();
     });
   }
@@ -53,12 +61,12 @@ export function TicketBoard({ tickets }: { tickets: BoardTicket[] }) {
                   <span className="code-ref">{ticket.ticket_code}</span>
                   <StatusPill status={ticket.status} />
                   <UrgencyPill urgency={ticket.urgency} />
-                  <LevelPill level={ticket.escalation_level} />
                 </div>
 
                 <Link
                   className="detail__title"
                   href={`/agent/tickets/${ticket.id}`}
+                  prefetch={false}
                   style={{ display: "block", marginTop: 8 }}
                 >
                   {ticket.subject}
@@ -66,6 +74,7 @@ export function TicketBoard({ tickets }: { tickets: BoardTicket[] }) {
 
                 <div className="detail__meta">
                   <span>{ticket.customer_name}</span>
+                  <span>{ticket.assignee_id ? "Ditugaskan ke Anda" : "Terbuka untuk semua programmer"}</span>
                   <span>Dibuat {relativeTime(ticket.created_at)}</span>
                   <span className="row row--center" style={{ gap: 4 }}>
                     <IconChat style={{ width: 13, height: 13 }} /> {ticket.message_count}
@@ -85,13 +94,22 @@ export function TicketBoard({ tickets }: { tickets: BoardTicket[] }) {
                   deadline={ticket.sla_deadline}
                   status={ticket.status}
                   breached={ticket.sla_breached}
+                  paused={Boolean(ticket.sla_paused_at)}
+                  pausedAt={ticket.sla_paused_at}
+                  pausedMinutes={ticket.sla_paused_minutes}
                   showWindow={false}
                 />
               </div>
             </div>
 
+            {claimError?.id === ticket.id && (
+              <p className="form-note form-note--err mt-2" role="alert">
+                {claimError.message}
+              </p>
+            )}
+
             <div className="row mt-2">
-              <Link className="btn btn--ghost btn--sm" href={`/agent/tickets/${ticket.id}`}>
+              <Link className="btn btn--ghost btn--sm" href={`/agent/tickets/${ticket.id}`} prefetch={false}>
                 Tangani tiket
               </Link>
               {!ticket.assignee_id && ticket.status !== "Closed" && (

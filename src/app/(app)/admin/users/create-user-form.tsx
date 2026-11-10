@@ -3,12 +3,18 @@
 import { useState, useTransition } from "react";
 
 import { createUser } from "@/app/actions/admin";
+import { ConfirmDialog } from "@/components/confirm-dialog";
 import { IconPlus } from "@/components/icons";
+import {
+  USERNAME_HINT,
+  USERNAME_PATTERN,
+  suggestUsername,
+} from "@/lib/auth/username";
 import type { UserRole } from "@/lib/types/database";
 
 const ROLES: { value: UserRole; label: string }[] = [
-  { value: "user", label: "Pengguna" },
-  { value: "admin", label: "Admin" },
+  { value: "user", label: "Pegawai" },
+  { value: "admin", label: "Programmer" },
 ];
 
 function suggestPassword() {
@@ -22,6 +28,7 @@ function suggestPassword() {
 
 export function CreateUserForm({ configured }: { configured: boolean }) {
   const [fullName, setFullName] = useState("");
+  const [username, setUsername] = useState("");
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
   const [role, setRole] = useState<UserRole>("user");
@@ -29,6 +36,7 @@ export function CreateUserForm({ configured }: { configured: boolean }) {
   const [phone, setPhone] = useState("");
   const [error, setError] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
+  const [confirmOpen, setConfirmOpen] = useState(false);
   const [pending, startTransition] = useTransition();
 
   function submit() {
@@ -38,7 +46,8 @@ export function CreateUserForm({ configured }: { configured: boolean }) {
     startTransition(async () => {
       const result = await createUser({
         fullName,
-        email,
+        username,
+        email: email || undefined,
         password,
         role,
         company: company || undefined,
@@ -51,8 +60,12 @@ export function CreateUserForm({ configured }: { configured: boolean }) {
       }
 
       const label = ROLES.find((r) => r.value === role)?.label ?? role;
-      setNotice(`Akun ${email} berhasil dibuat sebagai ${label}.`);
+      setNotice(
+        `Akun @${username.trim().toLowerCase()} berhasil dibuat sebagai ${label}.`,
+      );
+      setConfirmOpen(false);
       setFullName("");
+      setUsername("");
       setEmail("");
       setPassword("");
       setCompany("");
@@ -60,12 +73,14 @@ export function CreateUserForm({ configured }: { configured: boolean }) {
     });
   }
 
+  const roleLabel = ROLES.find((r) => r.value === role)?.label ?? role;
+
   return (
     <section className="card">
       <h2 className="card__title">Buat akun baru</h2>
       <p className="copy mt-1">
-        Akun langsung aktif dan bisa dipakai masuk. Role menentukan area yang
-        bisa diakses.
+        Akun langsung aktif dan bisa masuk dengan username. Role menentukan area
+        yang bisa diakses.
       </p>
 
       {!configured && (
@@ -80,7 +95,8 @@ export function CreateUserForm({ configured }: { configured: boolean }) {
         className="stack--sm mt-2"
         onSubmit={(e) => {
           e.preventDefault();
-          submit();
+          setError(null);
+          setConfirmOpen(true);
         }}
       >
         {error && <p className="form-note form-note--err">{error}</p>}
@@ -91,22 +107,47 @@ export function CreateUserForm({ configured }: { configured: boolean }) {
           <input
             value={fullName}
             onChange={(e) => setFullName(e.target.value)}
+            onBlur={() => {
+              if (!username && fullName.trim()) {
+                setUsername(suggestUsername(fullName));
+              }
+            }}
             required
             minLength={2}
+            maxLength={80}
             disabled={!configured}
             placeholder="Siti Nurhaliza"
           />
         </label>
 
         <label className="field">
-          <span>Email</span>
+          <span>Username</span>
+          <input
+            value={username}
+            onChange={(e) => setUsername(e.target.value)}
+            pattern={USERNAME_PATTERN}
+            required
+            minLength={3}
+            maxLength={32}
+            autoComplete="off"
+            disabled={!configured}
+            placeholder="siti.nurhaliza"
+          />
+          <span className="copy" style={{ fontSize: 12 }}>
+            {USERNAME_HINT}
+          </span>
+        </label>
+
+        <label className="field">
+          <span>
+            Email <em style={{ opacity: 0.6 }}>(opsional)</em>
+          </span>
           <input
             type="email"
             value={email}
             onChange={(e) => setEmail(e.target.value)}
-            required
             disabled={!configured}
-            placeholder="siti@perusahaan.com"
+            placeholder="Kosongkan untuk username@qrion.local"
           />
         </label>
 
@@ -174,6 +215,27 @@ export function CreateUserForm({ configured }: { configured: boolean }) {
           <IconPlus /> {pending ? "Membuat akun…" : "Buat akun"}
         </button>
       </form>
+
+      <ConfirmDialog
+        open={confirmOpen}
+        title="Buat akun ini?"
+        body={
+          <>
+            <strong>{fullName || "Pengguna baru"}</strong> akan dibuat sebagai{" "}
+            <strong>{roleLabel}</strong> dengan username{" "}
+            <strong>@{username.trim().toLowerCase() || "—"}</strong>. Semua
+            programmer akan menerima notifikasi.
+          </>
+        }
+        confirmLabel="Buat akun"
+        pending={pending}
+        error={error}
+        onCancel={() => {
+          setConfirmOpen(false);
+          setError(null);
+        }}
+        onConfirm={submit}
+      />
     </section>
   );
 }

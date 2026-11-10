@@ -43,7 +43,12 @@ export async function proxy(request: NextRequest) {
   const { pathname } = request.nextUrl;
   const isAuthRoute = pathname.startsWith("/login") || pathname.startsWith("/register");
 
-  if (!user && !isAuthRoute) {
+  // Schedulers (Vercel Cron, uptime pings) are not browsers: they carry no
+  // session cookie and expect a status code, not an HTML login form. The route
+  // does its own `CRON_SECRET` check, so it must be reachable while signed out.
+  const isMachineRoute = pathname.startsWith("/api/cron");
+
+  if (!user && !isAuthRoute && !isMachineRoute) {
     const url = request.nextUrl.clone();
     url.pathname = "/login";
     url.searchParams.set("next", pathname);

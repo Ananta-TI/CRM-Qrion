@@ -57,15 +57,31 @@ export function HeaderProvider({ children }: { children: React.ReactNode }) {
 export function useSetHeader(spec: HeaderSpec | null) {
   const ctx = useContext(HeaderContext);
   const setSpec = ctx?.setSpec;
-  const key = useMemo(() => JSON.stringify(spec), [spec]);
+
+  // Never stringify `actions`: on ticket detail pages it is a React element
+  // tree that contains the whole conversation transcript. Serialising that on
+  // every render is expensive and added real work to every header update.
+  // Title/sub/crumbs are enough to detect content changes; actions are compared
+  // by identity instead.
+  const key = useMemo(
+    () =>
+      JSON.stringify({
+        title: spec?.title,
+        sub: spec?.sub,
+        crumbs: spec?.crumbs,
+      }),
+    [spec?.title, spec?.sub, spec?.crumbs],
+  );
 
   useLayoutEffect(() => {
     if (!setSpec) return;
     setSpec(spec);
-    return () => setSpec(null);
-    // `spec` is re-created every render; `key` is its stable fingerprint.
+    // Deliberately no `setSpec(null)` cleanup. The shell keeps the previous
+    // title while the next page streams in; clearing it made the header flash
+    // a skeleton bar on every navigation, and the document shifted as the
+    // placeholder height differed from the real title.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [key, setSpec]);
+  }, [key, spec?.actions, setSpec]);
 }
 
 export function useHeader() {

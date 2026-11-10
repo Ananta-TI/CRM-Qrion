@@ -4,6 +4,7 @@ import { IconSearch } from "@/components/icons";
 import { Pager } from "@/components/pager";
 import { PageHead } from "@/components/ui";
 import { requireStaff } from "@/lib/auth/session";
+import { sanitizeSearchTerm } from "@/lib/domain/tickets";
 import { createClient } from "@/lib/supabase/server";
 import type { TicketStatus } from "@/lib/types/database";
 import { TicketBoard, type BoardTicket } from "./ticket-board";
@@ -24,18 +25,19 @@ export default async function AgentBoardPage({
   searchParams,
 }: PageProps<"/agent/board">) {
   // Back-office only: the layout checks for a session, this checks the role.
-  await requireStaff();
+  const session = await requireStaff();
   const params = await searchParams;
 
   const filter = typeof params.status === "string" ? params.status : "all";
   const rawQuery = typeof params.q === "string" ? params.q.trim() : "";
-  const q = rawQuery.replace(/[%,()]/g, " ").trim();
+  const q = sanitizeSearchTerm(rawQuery);
   const page = Math.max(1, Number(params.page) || 1);
 
   const supabase = await createClient();
   let query = supabase
     .from("tickets")
     .select("*", { count: "exact" })
+    .or(`assignee_id.is.null,assignee_id.eq.${session.userId}`)
     .order("created_at", { ascending: false });
 
   if (filter !== "all") {
@@ -76,7 +78,7 @@ export default async function AgentBoardPage({
 
   const boardTickets: BoardTicket[] = tickets.map((t) => ({
     ...t,
-    customer_name: nameById.get(t.customer_id) ?? "Pelanggan",
+    customer_name: nameById.get(t.customer_id) ?? "Pegawai",
     message_count: countByTicket.get(t.id) ?? 0,
   }));
 
@@ -92,7 +94,7 @@ export default async function AgentBoardPage({
     <>
       <PageHead
         title="Board Tiket"
-        sub="Cari, saring, dan ambil tiket yang perlu ditangani."
+        sub="Tiket yang ditujukan kepada Anda dan antrian bersama yang belum diambil."
       />
 
       <div className="toolbar">
@@ -103,6 +105,7 @@ export default async function AgentBoardPage({
               className="tab"
               aria-current={filter === f.key ? "true" : undefined}
               href={filterHref(f.key)}
+              prefetch={false}
             >
               {f.label}
             </Link>

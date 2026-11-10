@@ -3,10 +3,11 @@ import Link from "next/link";
 import { PageHead, Rating, StatCard, StatusPill, UrgencyPill } from "@/components/ui";
 import { IconFlag, IconPlus } from "@/components/icons";
 import { requireStaff } from "@/lib/auth/session";
+import { greetingName } from "@/lib/domain/people";
 import { relativeTime, slaState } from "@/lib/domain/tickets";
 import { createClient } from "@/lib/supabase/server";
 
-export const metadata = { title: "Ringkasan Agen" };
+export const metadata = { title: "Ringkasan Programmer" };
 
 export default async function AgentHome() {
   const session = await requireStaff();
@@ -15,6 +16,7 @@ export default async function AgentHome() {
   const { data: tickets } = await supabase
     .from("tickets")
     .select("*")
+    .or(`assignee_id.is.null,assignee_id.eq.${session.userId}`)
     .order("created_at", { ascending: false });
 
   const rows = tickets ?? [];
@@ -52,7 +54,7 @@ export default async function AgentHome() {
   return (
     <>
       <PageHead
-        title={`Selamat datang, ${session.profile.full_name.split(" ")[0]}`}
+        title={`Selamat datang, ${greetingName(session.profile.full_name)}`}
         sub="Antrian keluhan dan kesehatan SLA tim Anda hari ini."
       >
         <Link className="btn btn--ghost" href="/agent/board">
@@ -70,7 +72,7 @@ export default async function AgentHome() {
               {breached.length} tiket melewati target SLA
             </p>
             <p className="banner__sub">
-              Prioritas tertinggi — tangani sebelum pelanggan menghubungi ulang.
+              Prioritas tertinggi — tangani sebelum pegawai menghubungi ulang.
             </p>
           </div>
           <Link className="btn btn--warn btn--sm" href="/agent/board">
@@ -80,9 +82,9 @@ export default async function AgentHome() {
       )}
 
       <div className="grid">
-        <StatCard title="Tiket Baru" value={open.length} note="Belum diambil agen" href="/agent/board" />
-        <StatCard title="Sedang Diproses" value={active.length} note="Ditangani tim" href="/agent/board" />
-        <StatCard title="Menunggu Pelanggan" value={waiting.length} note="Validasi solusi" href="/agent/board" />
+        <StatCard title="Tiket Baru" value={open.length} note="Belum diambil programmer" href="/agent/board" />
+        <StatCard title="Sedang Diproses" value={active.length} note="Ditangani programmer" href="/agent/board" />
+        <StatCard title="Menunggu Pegawai" value={waiting.length} note="Validasi solusi" href="/agent/board" />
         <StatCard
           title="Tugas Saya"
           value={mine.length}
@@ -112,7 +114,6 @@ export default async function AgentHome() {
                     <th>Kode</th>
                     <th>Subjek</th>
                     <th>Prioritas</th>
-                    <th>Level</th>
                     <th>Status</th>
                     <th>Batas SLA</th>
                   </tr>
@@ -121,12 +122,12 @@ export default async function AgentHome() {
                   {queue.map((t) => (
                     <tr key={t.id}>
                       <td>
-                        <Link className="link-btn" href={`/agent/tickets/${t.id}`}>
+                        <Link className="link-btn" href={`/agent/tickets/${t.id}`} prefetch={false}>
                           {t.ticket_code}
                         </Link>
                       </td>
                       <td style={{ maxWidth: 280 }}>
-                        <Link className="pitem__name" href={`/agent/tickets/${t.id}`}>
+                        <Link className="pitem__name" href={`/agent/tickets/${t.id}`} prefetch={false}>
                           {t.subject}
                         </Link>
                         <span className="pitem__due">{t.category}</span>
@@ -134,7 +135,6 @@ export default async function AgentHome() {
                       <td>
                         <UrgencyPill urgency={t.urgency} />
                       </td>
-                      <td>{t.escalation_level}</td>
                       <td>
                         <StatusPill status={t.status} />
                       </td>
@@ -194,7 +194,7 @@ export default async function AgentHome() {
           </section>
 
           <section className="card">
-            <h2 className="card__title">Kepuasan pelanggan</h2>
+            <h2 className="card__title">Kepuasan pegawai</h2>
             {csat === null ? (
               <p className="copy mt-1">Belum ada survei yang diisi.</p>
             ) : (
@@ -217,7 +217,7 @@ export default async function AgentHome() {
               {rows.slice(0, 5).map((t) => (
                 <li className="titem" key={t.id}>
                   <span className="titem__body">
-                    <Link className="titem__name" href={`/agent/tickets/${t.id}`}>
+                    <Link className="titem__name" href={`/agent/tickets/${t.id}`} prefetch={false}>
                       {t.subject}
                     </Link>
                     <span className="titem__task">{relativeTime(t.created_at)}</span>

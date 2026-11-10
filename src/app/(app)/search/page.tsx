@@ -2,7 +2,7 @@ import Link from "next/link";
 
 import { Empty, PageHead, StatusPill, UrgencyPill } from "@/components/ui";
 import { isStaff, requireSession } from "@/lib/auth/session";
-import { relativeTime } from "@/lib/domain/tickets";
+import { relativeTime, sanitizeSearchTerm } from "@/lib/domain/tickets";
 import { createClient } from "@/lib/supabase/server";
 
 export const metadata = { title: "Pencarian" };
@@ -11,7 +11,8 @@ export default async function SearchPage({ searchParams }: PageProps<"/search">)
   const session = await requireSession();
   const staff = isStaff(session.profile.role);
   const params = await searchParams;
-  const q = typeof params.q === "string" ? params.q.trim() : "";
+  const rawQuery = typeof params.q === "string" ? params.q.trim() : "";
+  const q = sanitizeSearchTerm(rawQuery);
 
   const supabase = await createClient();
   let tickets: {
@@ -25,10 +26,18 @@ export default async function SearchPage({ searchParams }: PageProps<"/search">)
   }[] = [];
 
   if (q) {
-    const { data } = await supabase
+    let query = supabase
       .from("tickets")
       .select("id, ticket_code, subject, status, urgency, category, created_at")
-      .or(`subject.ilike.%${q}%,description.ilike.%${q}%,ticket_code.ilike.%${q}%`)
+      .or(`subject.ilike.%${q}%,description.ilike.%${q}%,ticket_code.ilike.%${q}%`);
+
+    // RLS already scopes rows; repeat the scope here so a future policy
+    // mistake cannot turn the search into a cross-user index.
+    query = staff
+      ? query.or(`assignee_id.is.null,assignee_id.eq.${session.userId}`)
+      : query.eq("customer_id", session.userId);
+
+    const { data } = await query
       .order("created_at", { ascending: false })
       .limit(50);
     tickets = data ?? [];
@@ -39,16 +48,16 @@ export default async function SearchPage({ searchParams }: PageProps<"/search">)
     <>
       <PageHead
         title="Hasil pencarian"
-        sub={q ? `Pencarian untuk “${q}”` : "Ketik sesuatu di kotak pencarian."}
+        sub={rawQuery ? `Pencarian untuk “${rawQuery}”` : "Ketik sesuatu di kotak pencarian."}
       />
 
       <section className="card">
-        {!q ? (
+        {!rawQuery ? (
           <Empty>Masukkan kata kunci untuk mencari tiket.</Empty>
         ) : tickets.length === 0 ? (
           <Empty>
-            Tidak ada tiket yang cocok dengan “{q}”. Coba kata kunci lain, atau
-            telusuri <Link className="link-btn" href="/knowledge">Knowledge Base</Link>.
+            Tidak ada tiket yang cocok dengan “{rawQuery}”. Coba kata kunci lain, atau
+            telusuri kata kunci lain.
           </Empty>
         ) : (
           <>
@@ -59,7 +68,7 @@ export default async function SearchPage({ searchParams }: PageProps<"/search">)
               {tickets.map((t) => (
                 <li className="pitem" key={t.id}>
                   <span className="pitem__body">
-                    <Link className="pitem__name" href={`${base}/${t.id}`}>
+                    <Link className="pitem__name" href={`${base}/${t.id}`} prefetch={false}>
                       {t.subject}
                     </Link>
                     <span className="pitem__due">
