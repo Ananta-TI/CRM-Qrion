@@ -128,6 +128,12 @@ export function AppShell({
               key={item.href}
               className="sidenav__item"
               href={item.href}
+              // Full prefetch, not the default shell-only one: these are the
+              // five known routes of the whole app, and with `staleTimes` in
+              // next.config.ts the result is reusable for a minute. Without it
+              // a click still waited ~1.2s for the server (measured), because
+              // dynamic routes are never cached client-side by default.
+              prefetch={true}
               aria-current={active ? "page" : undefined}
               onClick={() => setDrawerOpen(false)}
             >

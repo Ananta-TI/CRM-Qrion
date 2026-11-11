@@ -9,13 +9,14 @@ import { UserRow } from "./user-row";
 export const metadata = { title: "Kelola Pengguna" };
 
 export default async function AdminUsersPage() {
-  const session = await requireAdmin();
   const supabase = await createClient();
 
-  const { data: profiles } = await supabase
-    .from("profiles")
-    .select("*")
-    .order("created_at", { ascending: false });
+  // The profile list does not depend on the caller's row, so it runs alongside
+  // the role check instead of after it.
+  const [session, { data: profiles }] = await Promise.all([
+    requireAdmin(),
+    supabase.from("profiles").select("*").order("created_at", { ascending: false }),
+  ]);
 
   const rows = profiles ?? [];
   const configured = isAdminClientConfigured();

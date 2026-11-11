@@ -1,9 +1,11 @@
 import "server-only";
 
 import { cache } from "react";
+import { headers } from "next/headers";
 import { redirect } from "next/navigation";
 import type { Profile, UserRole } from "@/lib/types/database";
 import { createClient } from "@/lib/supabase/server";
+import { USER_HEADER } from "@/lib/auth/user-header";
 
 export type Session = {
   userId: string;
@@ -12,6 +14,26 @@ export type Session = {
 };
 
 const STAFF_ROLES: UserRole[] = ["admin"];
+
+/**
+ * The caller's id, WITHOUT a database round-trip.
+ *
+ * `proxy.ts` verifies the JWT locally and forwards the `sub` claim as a request
+ * header, so a page can start its own query right away and run `requireStaff()`
+ * alongside it — the profile lookup and the page data overlap instead of
+ * queueing. Before this, a navigation was strictly serial:
+ * proxy auth (~350ms) -> `get_my_profile()` (~350ms) -> page query (~450ms).
+ *
+ * Falls back to `getSession()` when the header is missing (e.g. a route outside
+ * the proxy matcher), so nothing silently changes behaviour on those paths.
+ */
+export const viewerId = cache(async (): Promise<string | null> => {
+  const forwarded = (await headers()).get(USER_HEADER);
+  if (forwarded) return forwarded;
+
+  const session = await getSession();
+  return session?.userId ?? null;
+});
 
 /**
  * Resolve the signed-in user plus their profile row in ONE Supabase round-trip.

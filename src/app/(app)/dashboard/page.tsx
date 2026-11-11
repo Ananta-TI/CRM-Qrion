@@ -8,22 +8,33 @@ import {
   UrgencyPill,
 } from "@/components/ui";
 import { IconPlus, IconTicket } from "@/components/icons";
-import { requireCustomer } from "@/lib/auth/session";
+import { requireCustomer, viewerId } from "@/lib/auth/session";
 import { greetingName } from "@/lib/domain/people";
 import { relativeTime } from "@/lib/domain/tickets";
 import { createClient } from "@/lib/supabase/server";
+import type { Ticket } from "@/lib/types/database";
 
 export const metadata = { title: "Dashboard" };
 
 export default async function CustomerDashboard() {
-  const session = await requireCustomer();
   const supabase = await createClient();
+  const viewerPromise = viewerId();
 
-  const { data: tickets } = await supabase
-    .from("tickets")
-    .select("*")
-    .eq("customer_id", session.userId)
-    .order("created_at", { ascending: false });
+  const ticketsPromise = (async () => {
+    const viewer = await viewerPromise;
+    if (!viewer) return { data: [] as Ticket[] };
+
+    return supabase
+      .from("tickets")
+      .select("*")
+      .eq("customer_id", viewer)
+      .order("created_at", { ascending: false });
+  })();
+
+  const [session, { data: tickets }] = await Promise.all([
+    requireCustomer(),
+    ticketsPromise,
+  ]);
 
   const rows = tickets ?? [];
 

@@ -26,6 +26,30 @@ const nextConfig: NextConfig = {
    *   get_my_profile() + get_nav_counts() (parallel) .....  ~250-360ms
    */
   partialPrefetching: false,
+
+  experimental: {
+    /*
+     * Since Next 15 `staleTimes.dynamic` defaults to 0, which means a dynamic
+     * page is NEVER reused from the client cache: every click pays the full
+     * server round-trip again, and the prefetched shell can only ever show the
+     * skeleton. Measured before this change (production build, /agent ->
+     * /agent/analytics): click-to-title 1202ms, of which 1161ms was the RSC
+     * fetch — proxy `auth.getUser()` ~350ms + `get_my_profile()` ~350ms +
+     * the page's own query ~450ms.
+     *
+     * 30s is the old v14 default. Long enough that moving around the app feels
+     * instant, short enough that a stale ticket status corrects itself; every
+     * mutation still calls `router.refresh()`, which drops the entry.
+     *
+     * `static` is cut to 60s (default 5 min) because the sidebar links use
+     * `prefetch={true}`: those full-page prefetches are cached under the static
+     * TTL, and a ticket board that is 5 minutes stale is worse than a refetch.
+     */
+    staleTimes: {
+      dynamic: 30,
+      static: 60,
+    },
+  },
   turbopack: {
     rules: {
       "*.css": {

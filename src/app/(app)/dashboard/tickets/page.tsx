@@ -3,10 +3,10 @@ import Link from "next/link";
 import { IconPlus, IconSearch } from "@/components/icons";
 import { Pager } from "@/components/pager";
 import { Empty, PageHead, SlaMeter, StatusPill, UrgencyPill } from "@/components/ui";
-import { requireCustomer } from "@/lib/auth/session";
+import { requireCustomer, viewerId } from "@/lib/auth/session";
 import { relativeTime, sanitizeSearchTerm } from "@/lib/domain/tickets";
 import { createClient } from "@/lib/supabase/server";
-import type { TicketStatus } from "@/lib/types/database";
+import type { Ticket, TicketStatus } from "@/lib/types/database";
 
 export const metadata = { title: "Tiket Saya" };
 
@@ -23,8 +23,8 @@ const FILTERS = [
 export default async function CustomerTicketsPage({
   searchParams,
 }: PageProps<"/dashboard/tickets">) {
-  const session = await requireCustomer();
   const params = await searchParams;
+  const viewerPromise = viewerId();
 
   const filter = typeof params.status === "string" ? params.status : "all";
   const rawQuery = typeof params.q === "string" ? params.q.trim() : "";
@@ -32,23 +32,36 @@ export default async function CustomerTicketsPage({
   const page = Math.max(1, Number(params.page) || 1);
 
   const supabase = await createClient();
-  let query = supabase
-    .from("tickets")
-    .select("*", { count: "exact" })
-    .eq("customer_id", session.userId)
-    .order("created_at", { ascending: false });
 
-  if (filter !== "all") {
-    query = query.eq("status", filter as TicketStatus);
-  }
-  if (q) {
-    query = query.or(
-      `ticket_code.ilike.%${q}%,subject.ilike.%${q}%,description.ilike.%${q}%`,
-    );
-  }
+  // The id comes from the proxy's verified JWT claim, so the list query and the
+  // role check overlap instead of queueing.
+  const queryPromise = (async () => {
+    const viewer = await viewerPromise;
+    if (!viewer) return { data: [] as Ticket[], count: 0 };
 
-  const from = (page - 1) * PAGE_SIZE;
-  const { data: tickets, count } = await query.range(from, from + PAGE_SIZE - 1);
+    let query = supabase
+      .from("tickets")
+      .select("*", { count: "exact" })
+      .eq("customer_id", viewer)
+      .order("created_at", { ascending: false });
+
+    if (filter !== "all") {
+      query = query.eq("status", filter as TicketStatus);
+    }
+    if (q) {
+      query = query.or(
+        `ticket_code.ilike.%${q}%,subject.ilike.%${q}%,description.ilike.%${q}%`,
+      );
+    }
+
+    const from = (page - 1) * PAGE_SIZE;
+    return query.range(from, from + PAGE_SIZE - 1);
+  })();
+
+  const [, { data: tickets, count }] = await Promise.all([
+    requireCustomer(),
+    queryPromise,
+  ]);
   const rows = tickets ?? [];
   const total = count ?? rows.length;
   const pageCount = Math.max(1, Math.ceil(total / PAGE_SIZE));

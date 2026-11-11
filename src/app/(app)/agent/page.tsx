@@ -2,22 +2,37 @@ import Link from "next/link";
 
 import { PageHead, Rating, StatCard, StatusPill, UrgencyPill } from "@/components/ui";
 import { IconFlag, IconPlus } from "@/components/icons";
-import { requireStaff } from "@/lib/auth/session";
+import { requireStaff, viewerId } from "@/lib/auth/session";
 import { greetingName } from "@/lib/domain/people";
 import { relativeTime, slaState } from "@/lib/domain/tickets";
 import { createClient } from "@/lib/supabase/server";
+import type { Ticket } from "@/lib/types/database";
 
 export const metadata = { title: "Ringkasan Programmer" };
 
 export default async function AgentHome() {
-  const session = await requireStaff();
   const supabase = await createClient();
+  const viewerPromise = viewerId();
 
-  const { data: tickets } = await supabase
-    .from("tickets")
-    .select("*")
-    .or(`assignee_id.is.null,assignee_id.eq.${session.userId}`)
-    .order("created_at", { ascending: false });
+  const sessionsPromise = requireStaff();
+
+  // The queue read keys off the proxy-verified id, so it does not wait for the
+  // profile lookup.
+  const ticketsPromise = (async () => {
+    const viewer = await viewerPromise;
+    if (!viewer) return { data: [] as Ticket[] };
+
+    return supabase
+      .from("tickets")
+      .select("*")
+      .or(`assignee_id.is.null,assignee_id.eq.${viewer}`)
+      .order("created_at", { ascending: false });
+  })();
+
+  const [session, { data: tickets }] = await Promise.all([
+    sessionsPromise,
+    ticketsPromise,
+  ]);
 
   const rows = tickets ?? [];
 

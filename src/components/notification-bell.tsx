@@ -71,13 +71,17 @@ export function NotificationProvider({
     void load();
   }, [load]);
 
-  // Refresh when the tab regains focus and every minute while it is open.
+  // Refresh when the tab regains focus, then on a slow timer. The poll used to
+  // run every 60s; each tick is a server action that re-reads ticket_events
+  // (~800-2900ms measured) and it competes with whatever the user is doing, so
+  // it is now 120s. The focus listener is the real refresh path — a user who
+  // comes back to the tab still sees new notifications immediately.
   useEffect(() => {
     function onFocus() {
       void load();
     }
     window.addEventListener("focus", onFocus);
-    const timer = window.setInterval(() => void load(), 60_000);
+    const timer = window.setInterval(() => void load(), 120_000);
     return () => {
       window.removeEventListener("focus", onFocus);
       window.clearInterval(timer);

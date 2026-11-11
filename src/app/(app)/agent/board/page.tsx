@@ -3,10 +3,10 @@ import Link from "next/link";
 import { IconSearch } from "@/components/icons";
 import { Pager } from "@/components/pager";
 import { PageHead } from "@/components/ui";
-import { requireStaff } from "@/lib/auth/session";
+import { requireStaff, viewerId } from "@/lib/auth/session";
 import { sanitizeSearchTerm } from "@/lib/domain/tickets";
 import { createClient } from "@/lib/supabase/server";
-import type { TicketStatus } from "@/lib/types/database";
+import type { Ticket, TicketStatus } from "@/lib/types/database";
 import { TicketBoard, type BoardTicket } from "./ticket-board";
 
 export const metadata = { title: "Board Tiket" };
@@ -25,8 +25,10 @@ export default async function AgentBoardPage({
   searchParams,
 }: PageProps<"/agent/board">) {
   // Back-office only: the layout checks for a session, this checks the role.
-  const session = await requireStaff();
+  // `viewerId()` comes from the proxy's verified JWT claim, so the ticket read
+  // starts at the same moment as the profile lookup instead of after it.
   const params = await searchParams;
+  const viewerPromise = viewerId();
 
   const filter = typeof params.status === "string" ? params.status : "all";
   const rawQuery = typeof params.q === "string" ? params.q.trim() : "";
@@ -34,23 +36,34 @@ export default async function AgentBoardPage({
   const page = Math.max(1, Number(params.page) || 1);
 
   const supabase = await createClient();
-  let query = supabase
-    .from("tickets")
-    .select("*", { count: "exact" })
-    .or(`assignee_id.is.null,assignee_id.eq.${session.userId}`)
-    .order("created_at", { ascending: false });
 
-  if (filter !== "all") {
-    query = query.eq("status", filter as TicketStatus);
-  }
-  if (q) {
-    query = query.or(
-      `ticket_code.ilike.%${q}%,subject.ilike.%${q}%,description.ilike.%${q}%`,
-    );
-  }
+  const queryPromise = (async () => {
+    const viewer = await viewerPromise;
+    if (!viewer) return { data: [] as Ticket[], count: 0 };
 
-  const from = (page - 1) * PAGE_SIZE;
-  const { data: raw, count } = await query.range(from, from + PAGE_SIZE - 1);
+    let query = supabase
+      .from("tickets")
+      .select("*", { count: "exact" })
+      .or(`assignee_id.is.null,assignee_id.eq.${viewer}`)
+      .order("created_at", { ascending: false });
+
+    if (filter !== "all") {
+      query = query.eq("status", filter as TicketStatus);
+    }
+    if (q) {
+      query = query.or(
+        `ticket_code.ilike.%${q}%,subject.ilike.%${q}%,description.ilike.%${q}%`,
+      );
+    }
+
+    const from = (page - 1) * PAGE_SIZE;
+    return query.range(from, from + PAGE_SIZE - 1);
+  })();
+
+  const [, { data: raw, count }] = await Promise.all([
+    requireStaff(),
+    queryPromise,
+  ]);
   const tickets = raw ?? [];
   const total = count ?? tickets.length;
   const pageCount = Math.max(1, Math.ceil(total / PAGE_SIZE));

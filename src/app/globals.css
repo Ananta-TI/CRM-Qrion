@@ -1170,6 +1170,17 @@ svg {
 .pill--breach .sw {
   background: #fff;
 }
+/* Standalone status dot (legends, chart keys). Inside a pill the dot is sized
+   by `.pill .sw`; everywhere else it needs its own box, otherwise the legend
+   renders an invisible 0×0 span. */
+.sw {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--c, var(--faint));
+  display: inline-block;
+  flex: none;
+}
 .sw--done {
   --c: var(--teal);
 }
@@ -2430,7 +2441,10 @@ textarea.input {
 }
 
 /* Sparkline / funnel (dashboard + analytics).
-   Animation is transform/opacity/stroke-dashoffset only. */
+   Animation is transform/opacity/stroke-dashoffset only. Each rule keeps the
+   FINAL state as its base, so if a document never ticks its animation clock
+   (background tab, print, headless capture) the chart is still fully drawn —
+   the animation only replays the entrance. */
 .dash-spark__line {
   stroke-dasharray: 1;
   stroke-dashoffset: 1;
@@ -2445,12 +2459,10 @@ textarea.input {
 }
 .rpt__line {
   stroke-dasharray: 1;
-  stroke-dashoffset: 1;
   animation: rpt-draw 1s cubic-bezier(0.16, 1, 0.3, 1) forwards;
 }
 .rpt__area,
 .rpt__pt {
-  opacity: 0;
   animation: rpt-fade 0.6s ease forwards;
 }
 .rpt__bfill,
@@ -2458,6 +2470,296 @@ textarea.input {
 .rpt__sfill {
   transform-origin: bottom;
   animation: rpt-grow 0.8s var(--ease) both;
+}
+
+/* ------------------------------------------------------ analytics charts --- */
+/* Every chart on the analytics page is hand-built from these primitives: plain
+   SVG marks and styled divs painted with the --chart* tokens. No chart library,
+   no client JavaScript — the page stays a server component. */
+.chart {
+  display: block;
+  width: 100%;
+  height: auto;
+  overflow: visible;
+}
+.chart__grid {
+  stroke: var(--chart-grid);
+  stroke-width: 1;
+}
+.chart__tick {
+  fill: var(--faint);
+  stroke: none;
+  font-size: 10px;
+  font-weight: 600;
+}
+.chart__line {
+  fill: none;
+  stroke-width: 2.4;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+.chart__dot {
+  stroke: var(--raised);
+  stroke-width: 1.5;
+}
+.chart__summary {
+  color: var(--muted);
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 6px 20px;
+  margin-top: 14px;
+  font-size: var(--fs-sm);
+  display: flex;
+}
+.chart__summary b {
+  color: var(--text);
+  font-size: var(--fs-lg);
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+}
+.charts {
+  grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
+  align-items: start;
+  gap: var(--gap);
+  display: grid;
+}
+
+/* Donut ---------------------------------------------------------------- */
+.donut {
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 18px;
+  display: flex;
+}
+.donut__ring {
+  flex: none;
+  position: relative;
+}
+.donut__ring svg {
+  width: 100%;
+  height: 100%;
+  display: block;
+}
+.donut__center {
+  text-align: center;
+  place-content: center;
+  line-height: 1.1;
+  display: grid;
+  position: absolute;
+  inset: 0;
+}
+.donut__num {
+  letter-spacing: -0.03em;
+  font-size: var(--fs-4xl);
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+}
+.donut__lbl {
+  color: var(--faint);
+  font-size: var(--fs-2xs);
+  font-weight: 600;
+}
+.donut__legend {
+  flex: 1 1 130px;
+  gap: 9px;
+  min-width: 0;
+  display: grid;
+}
+.donut__legend li {
+  align-items: center;
+  gap: 8px;
+  font-size: var(--fs-sm);
+  display: flex;
+}
+.donut__name {
+  color: var(--muted);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  overflow: hidden;
+}
+.donut__legend b {
+  margin-left: auto;
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+}
+.donut__pct {
+  color: var(--faint);
+  text-align: right;
+  width: 34px;
+  font-size: var(--fs-2xs);
+  font-variant-numeric: tabular-nums;
+}
+
+/* Horizontal bars ------------------------------------------------------ */
+.barlist {
+  gap: 12px;
+  display: grid;
+}
+.barlist__row {
+  grid-template-columns: minmax(58px, 92px) minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 10px;
+  display: grid;
+}
+.barlist__label {
+  color: var(--muted);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: var(--fs-sm);
+  overflow: hidden;
+}
+.barlist__track {
+  background: var(--well);
+  border-radius: 999px;
+  height: 8px;
+  overflow: hidden;
+}
+.barlist__fill {
+  border-radius: 999px;
+  height: 100%;
+  transform-origin: left;
+  animation: dash-grow 0.8s var(--ease);
+  display: block;
+}
+.barlist__value {
+  text-align: right;
+  min-width: 26px;
+  font-size: var(--fs-sm);
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+}
+
+/* Vertical columns ----------------------------------------------------- */
+.cols {
+  align-items: flex-end;
+  gap: 8px;
+  margin-top: 16px;
+  display: flex;
+}
+.cols__item {
+  flex: 1;
+  flex-direction: column;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+  height: 100%;
+  display: flex;
+}
+.cols__val {
+  font-size: var(--fs-xs);
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+}
+.cols__plot {
+  flex: 1;
+  align-items: flex-end;
+  width: 100%;
+  display: flex;
+}
+.cols__bar {
+  border-radius: 6px 6px 3px 3px;
+  width: 100%;
+  min-height: 3px;
+  transform-origin: bottom;
+  animation: rpt-grow 0.8s var(--ease);
+  display: block;
+}
+.cols__lbl {
+  color: var(--faint);
+  font-size: var(--fs-2xs);
+  font-weight: 600;
+}
+
+/* Stacked bars --------------------------------------------------------- */
+.stackbars {
+  gap: 14px;
+  margin-top: 16px;
+  display: grid;
+}
+.stackbars__row {
+  grid-template-columns: 62px minmax(0, 1fr) 30px;
+  align-items: center;
+  gap: 10px;
+  display: grid;
+}
+.stackbars__label {
+  color: var(--muted);
+  font-size: var(--fs-sm);
+}
+.stackbars__track {
+  background: var(--well);
+  border-radius: 999px;
+  gap: 2px;
+  height: 10px;
+  display: flex;
+  overflow: hidden;
+}
+.stackbars__fill {
+  background: var(--c, var(--chart));
+  border-radius: 999px;
+  height: 100%;
+  transform-origin: left;
+  animation: dash-grow 0.8s var(--ease);
+}
+.stackbars__fill--rest {
+  background: var(--line-2);
+}
+.stackbars__val {
+  text-align: right;
+  font-size: var(--fs-sm);
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+}
+
+/* Heatmap -------------------------------------------------------------- */
+.heat {
+  gap: 4px;
+  margin-top: 14px;
+  display: grid;
+}
+.heat__row {
+  grid-template-columns: 34px repeat(var(--heat-cols, 6), minmax(0, 1fr));
+  align-items: center;
+  gap: 4px;
+  display: grid;
+}
+.heat__lbl {
+  color: var(--faint);
+  font-size: var(--fs-2xs);
+  font-weight: 600;
+}
+.heat__head {
+  color: var(--faint);
+  text-align: center;
+  font-size: var(--fs-2xs);
+  font-weight: 600;
+}
+.heat__cell {
+  aspect-ratio: 1.7;
+  border-radius: 5px;
+  background: var(--well);
+}
+.heat__scale {
+  color: var(--faint);
+  align-items: center;
+  gap: 5px;
+  margin-top: 10px;
+  font-size: var(--fs-2xs);
+  display: flex;
+}
+.heat__scale i {
+  border-radius: 3px;
+  width: 14px;
+  height: 10px;
+  display: block;
+}
+
+/* Gauge caption -------------------------------------------------------- */
+.gauge__cap {
+  color: var(--faint);
+  text-align: center;
+  margin-top: 6px;
+  font-size: var(--fs-2xs);
 }
 
 /* ------------------------------------------------------------ auth page --- */
@@ -3080,11 +3382,17 @@ textarea.input {
   }
 }
 @keyframes rpt-draw {
+  from {
+    stroke-dashoffset: 1;
+  }
   to {
     stroke-dashoffset: 0;
   }
 }
 @keyframes rpt-fade {
+  from {
+    opacity: 0;
+  }
   to {
     opacity: 1;
   }
@@ -3129,7 +3437,10 @@ textarea.input {
   .rpt__pt,
   .rpt__bfill,
   .rpt__lfill,
-  .rpt__sfill {
+  .rpt__sfill,
+  .barlist__fill,
+  .cols__bar,
+  .stackbars__fill {
     animation: none;
   }
   .rpt__line {
